@@ -1,0 +1,23 @@
+package main
+
+import (
+	"net/http"
+	"strings"
+)
+
+func handleKeepalive(w http.ResponseWriter, r *http.Request, app *AppRuntime) *HttpResponseData {
+	//CtxLogger(r).Print("logging from /keepalive handler.")
+	return &HttpResponseData{
+		RespWriter: w,
+		Request:    r,
+		Status:     http.StatusOK,
+		Header:     CreateHeader("Content-Type", "text/plain; charset=utf-8"),
+		Body:       strings.NewReader("WoW"),
+	}
+}
+
+func Keepalive() EndpointHandler {
+	m := EndpointHandler(make(map[string]EndpointMethodHandler))
+	m[http.MethodGet] = handleKeepalive
+	return m
+}

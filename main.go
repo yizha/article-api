@@ -1,34 +1,45 @@
 package main
 
 import (
+	"fmt"
 	"os"
-	"time"
+	//"time"
 )
 
-func setup(conf *AppConf) {
-	// delete indices
-	if conf.DeleteIndics {
-		if err := conf.Elastic.DeleteIndex(conf.ArticleLockIndex); err != nil {
-			panic(err)
-		}
-		if err := conf.Elastic.DeleteIndex(conf.ArticleIndex); err != nil {
-			panic(err)
-		}
-		time.Sleep(5 * time.Second)
-	}
-	// create indices
-	if err := conf.Elastic.CreateIndex(conf.ArticleIndex); err != nil {
-		panic(err)
-	}
-	if err := conf.Elastic.CreateIndex(conf.ArticleLockIndex); err != nil {
-		panic(err)
-	}
+type AppRuntime struct {
+	logger  *JsonLogger
+	conf    *AppConf
+	elastic *Elastic
 }
 
 func main() {
 
-	conf := ParseArgs(os.Args)
-	conf.AppLogger.Printf("loaded conf: %v", conf.String())
+	logger := NewJsonLogger(os.Stdout).SetIncludeFile(true).SetFields(LogFields{
+		"_log_type": "app",
+	})
+	logger.Printf("starting with args %v", os.Args)
 
-	setup(conf)
+	conf := ParseArgs(os.Args)
+	logger.Printf("loaded app-conf: %v", conf.String())
+
+	elastic, err := NewElastic(conf.ESHosts)
+	if err != nil {
+		panic(err)
+	}
+	if ok, msg := elastic.CreateIndex(conf.ArticleIndex); ok {
+		logger.Print(msg)
+	} else {
+		panic(fmt.Sprintf("failed to create index %v, error: %v", conf.ArticleIndex.Name, msg))
+	}
+
+	app := &AppRuntime{
+		logger:  logger,
+		conf:    conf,
+		elastic: elastic,
+	}
+
+	err = StartAPIServer(app)
+	if err != nil {
+		panic(err)
+	}
 }

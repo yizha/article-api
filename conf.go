@@ -1,138 +1,70 @@
 package main
 
 import (
-	"bytes"
-	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"path"
-
-	elastic "gopkg.in/olivere/elastic.v5"
+	"strconv"
+	"strings"
 )
 
-const (
-	ArticleIndexDef = `
-{
-  "settings" : {
-    "number_of_shards" :   1,
-    "number_of_replicas" : 1
-  },
-  "mappings":{
-    "publish":{
-      "properties":{
-        "headline":     {"type": "text"},
-        "summary":      {"type": "text"},
-        "content":      {"type": "text"},
-        "tag":          {"type": "keyword"},
-        "created_at":   {"type": "date"},
-        "created_by":   {"type": "keyword"},
-        "edited_at":    {"type": "date"},
-        "edited_by":    {"type": "keyword"}
-      }
-    },
-    "version":{
-      "properties":{
-        "headline":     {"type": "text"},
-        "summary":      {"type": "text"},
-        "content":      {"type": "text"},
-        "tag":          {"type": "keyword"},
-        "created_at":   {"type": "date"},
-        "created_by":   {"type": "keyword"},
-        "edited_at":    {"type": "date"},
-        "edited_by":    {"type": "keyword"}
-      }
-    },
-    "draft":{
-      "properties":{
-        "headline":     {"type": "text"},
-        "summary":      {"type": "text"},
-        "content":      {"type": "text"},
-        "tag":          {"type": "keyword"},
-        "created_at":   {"type": "date"},
-        "created_by":   {"type": "keyword"},
-        "edited_at":    {"type": "date"},
-        "edited_by":    {"type": "keyword"}
-      }
-    }
-  }
-}`
-	ArticleLockIndexDef = `
-{
-  "settings" : {
-    "number_of_shards" :   1,
-    "number_of_replicas" : 1
-  },
-  "mappings":{
-    "lock":{
-      "properties":{
-      }
-    }
-  }
-}`
+var (
+	articleIndexDef         string
+	articleIndexTypePublish string
+	articleIndexTypeVersion string
+	articleIndexTypeDraft   string
+	articleIndexTypeLock    string
+
+	articleIndexTypes = &ArticleIndexTypes{
+		Publish: "publish",
+		Version: "version",
+		Draft:   "draft",
+		Lock:    "lock",
+	}
 )
 
-type ESIndex struct {
-	Name string
-	Def  string
+type ArticleIndexTypes struct {
+	Publish string
+	Version string
+	Draft   string
+	Lock    string
 }
 
-type Elastic struct {
-	client *elastic.Client
-	ctx    context.Context
-	logger *log.Logger
-}
+func init() {
+	textType := map[string]interface{}{"type": "text"}
+	dateType := map[string]interface{}{"type": "date"}
+	kwdType := map[string]interface{}{"type": "keyword"}
+	articleMappingProps := map[string]map[string]interface{}{
+		"headline":   textType,
+		"summary":    textType,
+		"content":    textType,
+		"tag":        kwdType,
+		"created_at": dateType,
+		"created_by": kwdType,
+		"edited_at":  dateType,
+		"edited_by":  kwdType,
+	}
 
-func (es *Elastic) CreateIndex(index *ESIndex) error {
-	if exists, err := es.client.IndexExists(index.Name).Do(es.ctx); err != nil {
-		return err
-	} else if exists {
-		es.logger.Printf("index %v exists.", index.Name)
-		return nil
-	}
-	if _, err := es.client.CreateIndex(index.Name).BodyString(index.Def).Do(es.ctx); err != nil {
-		return err
-	}
-	es.logger.Printf("created index %v.", index.Name)
-	return nil
-}
-
-func (es *Elastic) DeleteIndex(index *ESIndex) error {
-	if exists, err := es.client.IndexExists(index.Name).Do(es.ctx); err != nil {
-		return err
-	} else if !exists {
-		es.logger.Printf("index %v doesn't exist.", index.Name)
-		return nil
-	}
-	if _, err := es.client.DeleteIndex(index.Name).Do(es.ctx); err != nil {
-		return err
-	}
-	es.logger.Printf("deleted index %v.", index.Name)
-	return nil
-}
-
-func newElastic(ip string, port int, logger *log.Logger) *Elastic {
-	host := fmt.Sprintf("http://%v:%v", ip, port)
-	client, err := elastic.NewClient(
-		elastic.SetMaxRetries(3),
-		elastic.SetURL(host))
+	bytes, err := json.Marshal(map[string]interface{}{
+		"settings": map[string]interface{}{
+			"number_of_shards":     1,
+			"number_of_replicas":   1,
+			"index.mapper.dynamic": false,
+		},
+		"mappings": map[string]interface{}{
+			articleIndexTypes.Publish: articleMappingProps,
+			articleIndexTypes.Version: articleMappingProps,
+			articleIndexTypes.Draft:   articleMappingProps,
+			articleIndexTypes.Lock:    map[string]interface{}{},
+		},
+	})
 	if err != nil {
 		panic(err)
 	}
-
-	if ver, err := client.ElasticsearchVersion(host); err == nil {
-		logger.Printf("Elasticsearch at %v, version: %v.", host, ver)
-	} else {
-		panic(err)
-	}
-
-	return &Elastic{
-		client: client,
-		ctx:    context.Background(),
-		logger: logger,
-	}
+	articleIndexDef = string(bytes)
 }
 
 // Application Configurations
@@ -144,53 +76,62 @@ type AppConf struct {
 	// Port to the http server listens on
 	ServerPort int
 
-	// Elasticsearch Host
-	ESIP string
+	// Elasticsearch Hosts
+	ESHosts []string
 
-	// Elasticsearch Port
-	ESPort int
-
-	// story index
+	// article index
 	ArticleIndex *ESIndex
 
-	// story lock index
-	ArticleLockIndex *ESIndex
-
-	// Elasticsearch client
-	Elastic *Elastic
-
-	// loggers
-	AccessLogger, AppLogger *log.Logger
-
-	// delete index flag
-	DeleteIndics bool
+	// article index types
+	ArticleIndexTypes *ArticleIndexTypes
 }
 
 func (c *AppConf) String() string {
-	var buf = &bytes.Buffer{}
 
-	fmt.Fprintf(buf, "\n")
-	fmt.Fprintf(buf, "======== Application Configurations ========\n")
-	fmt.Fprintf(buf, "Server IP:          %v\n", c.ServerIP)
-	fmt.Fprintf(buf, "Server Port:        %v\n", c.ServerPort)
-	fmt.Fprintf(buf, "ES Server IP:       %v\n", c.ESIP)
-	fmt.Fprintf(buf, "ES Server Port:     %v\n", c.ESPort)
-	fmt.Fprintf(buf, "Article Index:      %v\n", c.ArticleIndex.Name)
-	fmt.Fprintf(buf, "Article Lock Index: %v\n", c.ArticleLockIndex.Name)
-	fmt.Fprintf(buf, "============================================\n")
-	fmt.Fprintf(buf, "\n")
-
-	return buf.String()
+	var x = struct {
+		ServerIP         string   `json:"server-ip"`
+		ServerPort       int      `json:"server-port"`
+		ESHosts          []string `json:"es-hosts"`
+		ArticleIndexName string   `json:"article-index"`
+	}{
+		ServerIP:         c.ServerIP,
+		ServerPort:       c.ServerPort,
+		ESHosts:          c.ESHosts,
+		ArticleIndexName: c.ArticleIndex.Name,
+	}
+	bytes, err := json.Marshal(x)
+	if err != nil {
+		panic(err)
+	}
+	return string(bytes)
 }
 
-func checkIPAndPort(ip *string, port *int) error {
-	if net.ParseIP(*ip) == nil {
-		return fmt.Errorf("invalid IP address: %v!", *ip)
+func checkIPAndPort(ip string, port int) error {
+	if net.ParseIP(ip) == nil {
+		return fmt.Errorf("invalid IP address: %v!", ip)
 	}
-	if *port <= 0 || *port > 65535 {
-		return fmt.Errorf("invalid port %v!", *port)
+	if port <= 0 || port > 65535 {
+		return fmt.Errorf("invalid port %v!", port)
 	}
 	return nil
+}
+
+func parseESHosts(s string) ([]string, error) {
+	hosts := strings.Split(s, ",")
+	for i := 0; i < len(hosts); i++ {
+		host := hosts[i]
+		parts := strings.Split(host, ":")
+		ip := parts[0]
+		port, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return nil, fmt.Errorf("invalid port in elasticsearch host %v!", host)
+		}
+		err = checkIPAndPort(ip, port)
+		if err != nil {
+			return nil, fmt.Errorf("invalid elasticsearch host %v, reason: %v!", host, err)
+		}
+	}
+	return hosts, nil
 }
 
 func ParseArgs(args []string) *AppConf {
@@ -199,10 +140,8 @@ func ParseArgs(args []string) *AppConf {
 	var cli = flag.NewFlagSet("story-api", flag.ExitOnError)
 	var help = cli.Bool("help", false, "Print usage and exit.")
 	var serverIP = cli.String("server-ip", "0.0.0.0", "IP address this API server binds to.")
-	var serverPort = cli.Int("server-port", 80, "Port this API server listens on.")
-	var esIP = cli.String("es-ip", "127.0.0.1", "Elasticsearch server IP address.")
-	var esPort = cli.Int("es-port", 9200, "Elasticsearch server port.")
-	var deleteIndices = cli.Bool("delete-indices", false, "Delete Elasticsearch indices on server startup.")
+	var serverPort = cli.Int("server-port", 8080, "Port this API server listens on.")
+	var esHostStr = cli.String("es-hosts", "127.0.0.1:9200", "Elasticsearch server hosts (comma separated).")
 
 	cli.Parse(args[1:])
 
@@ -214,30 +153,20 @@ func ParseArgs(args []string) *AppConf {
 	}
 
 	// validate given args
-	if err := checkIPAndPort(serverIP, serverPort); err != nil {
+	if err := checkIPAndPort(*serverIP, *serverPort); err != nil {
 		panic(err)
 	}
-	if err := checkIPAndPort(esIP, esPort); err != nil {
+	esHosts, err := parseESHosts(*esHostStr)
+	if err != nil {
 		panic(err)
 	}
-
-	accessLogger := log.New(os.Stdout, "", 0)
-	appLogger := log.New(os.Stderr, "", log.Ldate|log.Ltime|log.Lmicroseconds|log.LUTC|log.Lshortfile)
 
 	return &AppConf{
 		ServerIP:   *serverIP,
 		ServerPort: *serverPort,
-		ESIP:       *esIP,
-		ESPort:     *esPort,
+		ESHosts:    esHosts,
 
-		Elastic: newElastic(*esIP, *esPort, appLogger),
-
-		ArticleIndex:     &ESIndex{"article", ArticleIndexDef},
-		ArticleLockIndex: &ESIndex{"article_lock", ArticleLockIndexDef},
-
-		AccessLogger: accessLogger,
-		AppLogger:    appLogger,
-
-		DeleteIndics: *deleteIndices,
+		ArticleIndex:      &ESIndex{"article", articleIndexDef},
+		ArticleIndexTypes: articleIndexTypes,
 	}
 }
