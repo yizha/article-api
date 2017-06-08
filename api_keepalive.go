@@ -6,7 +6,7 @@ import (
 )
 
 func handleKeepalive(w http.ResponseWriter, r *http.Request, app *AppRuntime) *HttpResponseData {
-	//CtxLogger(r).Print("logging from /keepalive handler.")
+	//CtxLoggerFromReq(r).Print("logging from /keepalive handler.")
 	return &HttpResponseData{
 		RespWriter: w,
 		Request:    r,

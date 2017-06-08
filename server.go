@@ -19,13 +19,21 @@ const (
 
 type CtxKey string
 
+func WithRequestId(ctx context.Context, reqId string) context.Context {
+	return context.WithValue(ctx, CtxKeyReqId, reqId)
+}
+
+func RequestIdFromReq(req *http.Request) string {
+	return req.Context().Value(CtxKeyReqId).(string)
+}
+
 func WithCtxLogger(ctx context.Context, jl *JsonLogger, reqId string) context.Context {
 	return context.WithValue(ctx, CtxKeyReqLogger, jl.CloneWithFields(LogFields{
 		"req-id": reqId,
 	}))
 }
 
-func CtxLogger(req *http.Request) *JsonLogger {
+func CtxLoggerFromReq(req *http.Request) *JsonLogger {
 	return req.Context().Value(CtxKeyReqLogger).(*JsonLogger)
 }
 
@@ -73,7 +81,7 @@ func (data *HttpResponseData) Write() error {
 		}
 	}
 	// set request id
-	//header.Add("X-Request-Id", data.Request.Context().Value(key interface{})
+	header.Add("X-Request-Id", RequestIdFromReq(data.Request))
 	// write header with status code
 	data.RespWriter.WriteHeader(data.Status)
 	// write body
@@ -109,7 +117,8 @@ func wrapRequestAndResponse(w http.ResponseWriter, r *http.Request, app *AppRunt
 		requestTime: time.Now().UTC(),
 	}
 	reqId := xid.New().String()
-	ctx := context.WithValue(r.Context(), CtxKeyReqId, reqId)
+	ctx := r.Context()
+	ctx = WithRequestId(ctx, reqId)
 	ctx = WithCtxLogger(ctx, app.logger, reqId)
 	r = r.WithContext(ctx)
 
@@ -144,17 +153,17 @@ func logRequest(w *ResponseWriter, r *http.Request, logger *JsonLogger) {
 	requestId := r.Context().Value(CtxKeyReqId)
 	logger.LogMap(LogFields{
 		"_log_type":      "http-access",
-		"client-ip":      clientIp,
-		"req-id":         requestId,
-		"req-ts":         w.requestTime.Format("2006-01-02T15:04:05.000Z"),
-		"req-method":     r.Method,
-		"req-uri":        r.RequestURI,
-		"req-protocol":   r.Proto,
-		"resp-status":    w.status,
-		"resp-body-size": w.bytesWrote,
-		"process-time":   processDuration.Nanoseconds(),
+		"client_ip":      clientIp,
+		"req_id":         requestId,
+		"req_ts":         w.requestTime.Format("2006-01-02T15:04:05.000Z"),
+		"req_method":     r.Method,
+		"req_uri":        r.RequestURI,
+		"req_protocol":   r.Proto,
+		"resp_status":    w.status,
+		"resp_body_size": w.bytesWrote,
+		"process_time":   processDuration.Nanoseconds(),
 		"referer":        referer,
-		"user-agent":     userAgent,
+		"user_agent":     userAgent,
 	})
 }
 
@@ -185,12 +194,13 @@ func (e *Endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logRequest(rw, rr, e.app.logger)
 }
 
-func initRoutes(app *AppRuntime) {
+func registerHandlers(app *AppRuntime) {
 	// set up
-	routes := make(map[string]*Endpoint)
-	routes["/keepalive"] = &Endpoint{app, Keepalive()}
-	// register
-	for path, ep := range routes {
+	handlers := make(map[string]*Endpoint)
+	handlers["/keepalive"] = &Endpoint{app, Keepalive()}
+
+	// register handlers
+	for path, ep := range handlers {
 		http.Handle(path, ep)
 	}
 }
@@ -202,7 +212,7 @@ func StartAPIServer(app *AppRuntime) error {
 	// create server
 
 	// register routes and handlers
-	initRoutes(app)
+	registerHandlers(app)
 
 	// start server
 	address := fmt.Sprintf("%v:%v", conf.ServerIP, conf.ServerPort)

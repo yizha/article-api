@@ -14,7 +14,7 @@ type AppRuntime struct {
 
 func main() {
 
-	logger := NewJsonLogger(os.Stdout).SetIncludeFile(true).SetFields(LogFields{
+	logger := NewJsonLogger(os.Stdout).SetOutputSourceFile(true).SetFields(LogFields{
 		"_log_type": "app",
 	})
 	logger.Printf("starting with args %v", os.Args)

@@ -14,7 +14,7 @@ type LogFields map[string]interface{}
 
 type JsonLogger struct {
 	messageFieldName string
-	includeFile      bool
+	outputSourceFile bool
 	fields           LogFields
 	l                *log.Logger
 }
@@ -31,7 +31,7 @@ func (jl *JsonLogger) Output(calldepth int, v map[string]interface{}) {
 			m[k] = v
 		}
 	}
-	if jl.includeFile {
+	if jl.outputSourceFile {
 		_, file, line, ok := runtime.Caller(calldepth)
 		if ok {
 			short := file
@@ -92,8 +92,8 @@ func (jl *JsonLogger) SetFields(fields LogFields) *JsonLogger {
 	return jl
 }
 
-func (jl *JsonLogger) SetIncludeFile(includeFile bool) *JsonLogger {
-	jl.includeFile = includeFile
+func (jl *JsonLogger) SetOutputSourceFile(b bool) *JsonLogger {
+	jl.outputSourceFile = b
 	return jl
 }
 
@@ -102,7 +102,7 @@ func (jl *JsonLogger) SetIncludeFile(includeFile bool) *JsonLogger {
 func (jl *JsonLogger) CloneWithFields(fields LogFields) *JsonLogger {
 	return &JsonLogger{
 		messageFieldName: jl.messageFieldName,
-		includeFile:      jl.includeFile,
+		outputSourceFile: jl.outputSourceFile,
 		fields:           fields,
 		l:                jl.l,
 	}
