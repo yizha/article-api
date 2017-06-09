@@ -8,11 +8,9 @@ import (
 func handleKeepalive(w http.ResponseWriter, r *http.Request, app *AppRuntime) *HttpResponseData {
 	//CtxLoggerFromReq(r).Print("logging from /keepalive handler.")
 	return &HttpResponseData{
-		RespWriter: w,
-		Request:    r,
-		Status:     http.StatusOK,
-		Header:     CreateHeader("Content-Type", "text/plain; charset=utf-8"),
-		Body:       strings.NewReader("WoW"),
+		Status: http.StatusOK,
+		Header: CreateHeader("Content-Type", "text/plain; charset=utf-8"),
+		Body:   strings.NewReader("WoW"),
 	}
 }
 

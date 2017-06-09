@@ -12,12 +12,14 @@ import (
 	"github.com/rs/xid"
 )
 
+type CtxKey string
+
 const (
 	CtxKeyReqId     CtxKey = "req-id"
-	CtxKeyReqLogger CtxKey = "req-app-logger"
-)
+	CtxKeyReqLogger        = "req-app-logger"
 
-type CtxKey string
+	HttpHeaderRequestId string = "X-Request-Id"
+)
 
 func WithRequestId(ctx context.Context, reqId string) context.Context {
 	return context.WithValue(ctx, CtxKeyReqId, reqId)
@@ -38,54 +40,46 @@ func CtxLoggerFromReq(req *http.Request) *JsonLogger {
 }
 
 type ResponseWriter struct {
-	rw          http.ResponseWriter
+	w           http.ResponseWriter
 	status      int
 	bytesWrote  uint64
 	requestTime time.Time
 }
 
 func (w *ResponseWriter) Header() http.Header {
-	return w.rw.Header()
+	return w.w.Header()
 }
 
 func (w *ResponseWriter) Write(bytes []byte) (int, error) {
-	n, err := w.rw.Write(bytes)
+	n, err := w.w.Write(bytes)
 	w.bytesWrote += uint64(n)
 	return n, err
 }
 
 func (w *ResponseWriter) WriteHeader(status int) {
-	w.rw.WriteHeader(status)
+	w.w.WriteHeader(status)
 	w.status = status
 }
 
 type HttpResponseData struct {
-	RespWriter http.ResponseWriter
-	Request    *http.Request
-	Status     int
-	Header     http.Header
-	Body       io.Reader
-	Ignore     bool
+	Status int
+	Header http.Header
+	Body   io.Reader
 }
 
-func (data *HttpResponseData) Write() error {
-	if data.Ignore {
-		return nil
-	}
+func (data *HttpResponseData) Write(w http.ResponseWriter) error {
 	// set headers
-	header := data.RespWriter.Header()
+	header := w.Header()
 	for k, vals := range data.Header {
 		header.Del(k)
 		for _, v := range vals {
 			header.Add(k, v)
 		}
 	}
-	// set request id
-	header.Add("X-Request-Id", RequestIdFromReq(data.Request))
 	// write header with status code
-	data.RespWriter.WriteHeader(data.Status)
+	w.WriteHeader(data.Status)
 	// write body
-	_, err := io.Copy(data.RespWriter, data.Body)
+	_, err := io.Copy(w, data.Body)
 	return err
 }
 
@@ -110,19 +104,21 @@ type Endpoint struct {
 }
 
 func wrapRequestAndResponse(w http.ResponseWriter, r *http.Request, app *AppRuntime) (*ResponseWriter, *http.Request) {
-	rw := &ResponseWriter{
-		rw:          w,
+	reqId := xid.New().String()
+	w.Header().Set(HttpHeaderRequestId, reqId)
+	ww := &ResponseWriter{
+		w:           w,
 		status:      http.StatusNotFound,
 		bytesWrote:  uint64(0),
 		requestTime: time.Now().UTC(),
 	}
-	reqId := xid.New().String()
+
 	ctx := r.Context()
 	ctx = WithRequestId(ctx, reqId)
 	ctx = WithCtxLogger(ctx, app.logger, reqId)
-	r = r.WithContext(ctx)
+	wr := r.WithContext(ctx)
 
-	return rw, r
+	return ww, wr
 }
 
 func logRequest(w *ResponseWriter, r *http.Request, logger *JsonLogger) {
@@ -168,7 +164,7 @@ func logRequest(w *ResponseWriter, r *http.Request, logger *JsonLogger) {
 }
 
 func (e *Endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	rw, rr := wrapRequestAndResponse(w, r, e.app)
+	ww, wr := wrapRequestAndResponse(w, r, e.app)
 	var d *HttpResponseData
 	if h, ok := e.handlers[r.Method]; !ok {
 		allow := make([]string, 0, len(e.handlers))
@@ -177,32 +173,21 @@ func (e *Endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		allowHeader := strings.Join(allow, ", ")
 		d = &HttpResponseData{
-			RespWriter: rw,
-			Request:    r,
-			Status:     http.StatusMethodNotAllowed,
-			Header:     CreateHeader("Content-Type", "text/plain; charset=utf-8", "Allow", allowHeader),
-			Body:       strings.NewReader(fmt.Sprintf("Method %v not allowed for resource %v", r.Method, r.URL.Path)),
+			Status: http.StatusMethodNotAllowed,
+			Header: CreateHeader("Content-Type", "text/plain; charset=utf-8", "Allow", allowHeader),
+			Body:   strings.NewReader(fmt.Sprintf("Method %v not allowed for resource %v", r.Method, r.URL.Path)),
 		}
 	} else {
-		d = h(rw, rr, e.app)
+		d = h(ww, wr, e.app)
 	}
-	if d != nil {
-		if err := d.Write(); err != nil {
-			e.app.logger.LogFields("error", err.Error())
-		}
+	if err := d.Write(ww); err != nil {
+		e.app.logger.LogFields("error", err.Error())
 	}
-	logRequest(rw, rr, e.app.logger)
+	logRequest(ww, wr, e.app.logger)
 }
 
 func registerHandlers(app *AppRuntime) {
-	// set up
-	handlers := make(map[string]*Endpoint)
-	handlers["/keepalive"] = &Endpoint{app, Keepalive()}
-
-	// register handlers
-	for path, ep := range handlers {
-		http.Handle(path, ep)
-	}
+	http.Handle("/keepalive", &Endpoint{app, Keepalive()})
 }
 
 func StartAPIServer(app *AppRuntime) error {
