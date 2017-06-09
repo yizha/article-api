@@ -6,10 +6,16 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
+
+type ArticleIndexTypes struct {
+	Publish string
+	Version string
+	Draft   string
+}
 
 var (
 	articleIndexDef string
@@ -18,30 +24,25 @@ var (
 		Publish: "publish",
 		Version: "version",
 		Draft:   "draft",
-		Lock:    "lock",
 	}
 )
 
-type ArticleIndexTypes struct {
-	Publish string
-	Version string
-	Draft   string
-	Lock    string
-}
-
 func init() {
-	textType := map[string]interface{}{"type": "text"}
-	dateType := map[string]interface{}{"type": "date"}
-	kwdType := map[string]interface{}{"type": "keyword"}
-	articleMappingProps := map[string]map[string]interface{}{
-		"headline":   textType,
-		"summary":    textType,
-		"content":    textType,
-		"tag":        kwdType,
-		"created_at": dateType,
-		"created_by": kwdType,
-		"edited_at":  dateType,
-		"edited_by":  kwdType,
+	articleMappingProps := map[string]map[string]map[string]interface{}{
+		"properties": map[string]map[string]interface{}{
+			"headline":     map[string]interface{}{"type": "text"},
+			"summary":      map[string]interface{}{"type": "text", "index": "false"},
+			"content":      map[string]interface{}{"type": "text"},
+			"tag":          map[string]interface{}{"type": "keyword"},
+			"created_at":   map[string]interface{}{"type": "date"},
+			"created_by":   map[string]interface{}{"type": "keyword"},
+			"revised_at":   map[string]interface{}{"type": "date"},
+			"revised_by":   map[string]interface{}{"type": "keyword"},
+			"version":      map[string]interface{}{"type": "long"},
+			"from_version": map[string]interface{}{"type": "long"},
+			"note":         map[string]interface{}{"type": "text", "index": "false"},
+			"locked_by":    map[string]interface{}{"type": "keyword"},
+		},
 	}
 
 	bytes, err := json.Marshal(map[string]interface{}{
@@ -54,21 +55,92 @@ func init() {
 			articleIndexTypes.Publish: articleMappingProps,
 			articleIndexTypes.Version: articleMappingProps,
 			articleIndexTypes.Draft:   articleMappingProps,
-			articleIndexTypes.Lock:    map[string]interface{}{},
 		},
 	})
 	if err != nil {
 		panic(err)
 	}
 	articleIndexDef = string(bytes)
+	//fmt.Println(articleIndexDef)
+}
+
+type LoggingTarget string
+
+const (
+	LoggingTargetStdout LoggingTarget = "stdout"
+	LoggingTargetFile   LoggingTarget = "file"
+)
+
+type LoggingSpec struct {
+	Target     LoggingTarget
+	Filepath   string
+	MaxSize    int // megabytes
+	MaxBackups int
+	MaxAge     int // days
+}
+
+func (ls *LoggingSpec) String() string {
+	if ls.Target == LoggingTargetStdout {
+		return string(LoggingTargetStdout)
+	} else {
+		return fmt.Sprintf("%v:%v,%v,%v,%v", ls.Target, ls.Filepath, ls.MaxSize, ls.MaxBackups, ls.MaxAge)
+	}
+}
+
+func (ls *LoggingSpec) Set(s string) error {
+	parts := strings.SplitN(s, ":", 2)
+	if parts[0] == string(LoggingTargetStdout) {
+		ls.Target = LoggingTargetStdout
+		return nil
+	} else if parts[0] == string(LoggingTargetFile) {
+		if len(parts) != 2 {
+			return fmt.Errorf(`missing spec for "%v" logging!`, LoggingTargetFile)
+		}
+		specs := strings.Split(parts[1], ",")
+		if len(specs) != 4 {
+			return fmt.Errorf(`invalid spec "%v"`, parts[1])
+		}
+		var a2i = func(name, s string, min, max int) (int, error) {
+			n, err := strconv.Atoi(s)
+			if err != nil {
+				return 0, fmt.Errorf("%v=%v is not an integer.", name, s)
+			}
+			if n < min || n > max {
+				return 0, fmt.Errorf("%v=%v is not in allowed range [%v, %v]", name, n, min, max)
+			}
+			return n, nil
+		}
+		path := filepath.Clean(specs[0])
+		maxSize, err := a2i("max-size", specs[1], 0, 1000)
+		if err != nil {
+			return err
+		}
+		maxBackups, err := a2i("max-backups", specs[2], 0, 100)
+		if err != nil {
+			return err
+		}
+		maxAge, err := a2i("max-age", specs[3], 0, 30)
+		if err != nil {
+			return err
+		}
+
+		ls.Target = LoggingTargetFile
+		ls.Filepath = path
+		ls.MaxSize = maxSize
+		ls.MaxBackups = maxBackups
+		ls.MaxAge = maxAge
+		return nil
+	} else {
+		return fmt.Errorf(`unsupported logging target "%v" in "%v"`, parts[0], s)
+	}
 }
 
 // Application Configurations
 type AppConf struct {
 
 	// App ID, appears in every log entry so that if logs are sent to
-	// elasticsearch it will be easy to tell from logs from other
-	// application
+	// elasticsearch it will be easy to tell our logs from other
+	// applications'
 	AppId string
 
 	// Host to bind the http server
@@ -79,6 +151,13 @@ type AppConf struct {
 
 	// Elasticsearch Hosts
 	ESHosts []string
+
+	// logging spec
+	// Only support logging to stdout or file
+	// When it is file we use https://github.com/natefinch/lumberjack
+	// So for stdout logging it is "stdout" for file logging it is
+	// something like "file:[path],[max-size],[max-backups],[max-age]"
+	LoggingSpec *LoggingSpec
 
 	// article index
 	ArticleIndex *ESIndex
@@ -94,11 +173,13 @@ func (c *AppConf) String() string {
 		ServerPort       int      `json:"server-port"`
 		ESHosts          []string `json:"es-hosts"`
 		ArticleIndexName string   `json:"article-index"`
+		LoggingSpec      string   `json:"logging-spec"`
 	}{
 		ServerIP:         c.ServerIP,
 		ServerPort:       c.ServerPort,
 		ESHosts:          c.ESHosts,
 		ArticleIndexName: c.ArticleIndex.Name,
+		LoggingSpec:      c.LoggingSpec.String(),
 	}
 	bytes, err := json.Marshal(x)
 	if err != nil {
@@ -144,11 +225,13 @@ func ParseArgs(args []string) *AppConf {
 	var serverIP = cli.String("server-ip", "0.0.0.0", "IP address this API server binds to.")
 	var serverPort = cli.Int("server-port", 8080, "Port this API server listens on.")
 	var esHostStr = cli.String("es-hosts", "127.0.0.1:9200", "Elasticsearch server hosts (comma separated).")
+	var loggingSpec = &LoggingSpec{Target: LoggingTargetStdout}
+	cli.Var(loggingSpec, "logging", `set logging to stdout ("stdout") or a file ("file:[path],[max-size],[max-backups],[max-age]")`)
 
 	cli.Parse(args[1:])
 
 	if *help {
-		fmt.Fprintf(os.Stderr, "Usage of %v:\n", path.Base(args[0]))
+		fmt.Fprintf(os.Stderr, "Usage of %v:\n", filepath.Base(args[0]))
 		cli.PrintDefaults()
 		fmt.Fprintln(os.Stderr)
 		os.Exit(0)
@@ -167,10 +250,11 @@ func ParseArgs(args []string) *AppConf {
 	}
 
 	return &AppConf{
-		AppId:      *appId,
-		ServerIP:   *serverIP,
-		ServerPort: *serverPort,
-		ESHosts:    esHosts,
+		AppId:       *appId,
+		ServerIP:    *serverIP,
+		ServerPort:  *serverPort,
+		ESHosts:     esHosts,
+		LoggingSpec: loggingSpec,
 
 		ArticleIndex:      &ESIndex{"article", articleIndexDef},
 		ArticleIndexTypes: articleIndexTypes,

@@ -15,16 +15,25 @@ type AppRuntime struct {
 func main() {
 
 	conf := ParseArgs(os.Args)
-	logger := NewJsonLogger(os.Stdout).SetFields(LogFields{
+
+	// create logger
+	logger, err := NewJsonLoggerFromSpec(conf.LoggingSpec)
+	if err != nil {
+		panic(fmt.Sprintf("failed to create log from spec %v, error: %v", conf.LoggingSpec.String(), err))
+	}
+	logger.SetFields(LogFields{
 		"app_id":    conf.AppId,
 		"log_group": "app",
 	})
 	logger.Pinfof("starting %v with conf: %v", conf.AppId, conf.String())
 
+	// init elasticsearch client
 	elastic, err := NewElastic(conf.ESHosts)
 	if err != nil {
 		panic(err)
 	}
+
+	// create the index if it doesn't exist
 	if ok, msg := elastic.CreateIndex(conf.ArticleIndex); ok {
 		logger.Pinfo(msg)
 	} else {

@@ -6,8 +6,11 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime"
 	"time"
+
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 type LogFields map[string]interface{}
@@ -209,10 +212,41 @@ func (jl *JsonLogger) CloneWithFields(newFields LogFields) *JsonLogger {
 	}
 }
 
+func CreateLogWriter(ls *LoggingSpec) (io.Writer, error) {
+	if ls.Target == LoggingTargetStdout {
+		return os.Stdout, nil
+	} else if ls.Target == LoggingTargetFile {
+		if err := os.MkdirAll(filepath.Dir(ls.Filepath), 0644); err != nil {
+			return nil, err
+		}
+		f, err := os.OpenFile(ls.Filepath, os.O_RDWR|os.O_CREATE, 0755)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		return &lumberjack.Logger{
+			Filename:   ls.Filepath,
+			MaxSize:    ls.MaxSize, // megabytes
+			MaxBackups: ls.MaxBackups,
+			MaxAge:     ls.MaxAge, //days
+		}, nil
+	} else {
+		return os.Stdout, nil
+	}
+}
+
 func NewJsonLogger(out io.Writer) *JsonLogger {
 	return &JsonLogger{
 		l:                log.New(out, "", 0),
 		messageFieldName: "message",
 		outputSourceFile: true,
 	}
+}
+
+func NewJsonLoggerFromSpec(ls *LoggingSpec) (*JsonLogger, error) {
+	w, err := CreateLogWriter(ls)
+	if err != nil {
+		return nil, err
+	}
+	return NewJsonLogger(w), nil
 }
