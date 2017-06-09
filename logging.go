@@ -19,7 +19,7 @@ type JsonLogger struct {
 	l                *log.Logger
 }
 
-func (jl *JsonLogger) Output(calldepth int, v map[string]interface{}) {
+func (jl *JsonLogger) Output(calldepth int, v LogFields, x ...interface{}) {
 	m := make(map[string]interface{})
 	if jl.fields != nil && len(jl.fields) > 0 {
 		for k, v := range jl.fields {
@@ -28,7 +28,19 @@ func (jl *JsonLogger) Output(calldepth int, v map[string]interface{}) {
 	}
 	if v != nil && len(v) > 0 {
 		for k, v := range v {
-			m[k] = v
+			if k != "" {
+				m[k] = v
+			}
+		}
+	}
+	xLen := len(x)
+	if xLen > 0 {
+		cnt := xLen / 2
+		for i := 0; i <= cnt; i = i + 2 {
+			k := fmt.Sprintf("%v", x[i])
+			if k != "" {
+				m[k] = x[i+1]
+			}
 		}
 	}
 	if jl.outputSourceFile {
@@ -46,9 +58,11 @@ func (jl *JsonLogger) Output(calldepth int, v map[string]interface{}) {
 			file = "???"
 			line = 0
 		}
-		m["_source_file"] = fmt.Sprintf("%v:%v", file, line)
+		m["source_file"] = fmt.Sprintf("%v:%v", file, line)
 	}
-	m["_log_ts"] = time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	ts := time.Now().UTC()
+	m["log_ts"] = ts.UnixNano()
+	m["log_time"] = ts.Format("2006-01-02T15:04:05.000Z")
 	bytes, err := json.Marshal(m)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to encoding %v to json, error: %v", v, err)
@@ -57,29 +71,92 @@ func (jl *JsonLogger) Output(calldepth int, v map[string]interface{}) {
 	}
 }
 
-func (jl *JsonLogger) LogMap(v map[string]interface{}) {
+func array2map(v []interface{}) map[string]interface{} {
+	entryCnt := len(v) / 2
+	m := make(map[string]interface{}, entryCnt)
+	for i := 0; i <= entryCnt; i = i + 2 {
+		k := fmt.Sprintf("%v", v[i])
+		if k == "" {
+			continue
+		}
+		m[k] = v[i+1]
+	}
+	return m
+}
+
+func (jl *JsonLogger) LogMap(v LogFields) {
 	jl.Output(2, v)
 }
 
-func (jl *JsonLogger) logFieldsWithCalldepth(calldepth int, v ...interface{}) {
-	entryCnt := len(v) / 2
-	m := make(map[string]interface{}, entryCnt+2)
-	for i := 0; i <= entryCnt; i = i + 2 {
-		m[fmt.Sprintf("%v", v[i])] = v[i+1]
-	}
-	jl.Output(calldepth, m)
+func (jl *JsonLogger) Log(v ...interface{}) {
+	jl.Output(2, array2map(v))
 }
 
-func (jl *JsonLogger) LogFields(v ...interface{}) {
-	jl.logFieldsWithCalldepth(3, v...)
-}
-
-func (jl *JsonLogger) Print(s string) {
-	jl.logFieldsWithCalldepth(3, jl.messageFieldName, s)
+func (jl *JsonLogger) Print(v ...interface{}) {
+	jl.Output(2, LogFields{jl.messageFieldName: fmt.Sprint(v...)})
 }
 
 func (jl *JsonLogger) Printf(f string, v ...interface{}) {
-	jl.logFieldsWithCalldepth(3, jl.messageFieldName, fmt.Sprintf(f, v...))
+	jl.Output(2, LogFields{jl.messageFieldName: fmt.Sprintf(f, v...)})
+}
+
+func (jl *JsonLogger) WarnMap(v LogFields) {
+	jl.Output(2, v, "level", "warn")
+}
+
+func (jl *JsonLogger) InfoMap(v LogFields) {
+	jl.Output(2, v, "level", "info")
+}
+
+func (jl *JsonLogger) ErrorMap(v LogFields) {
+	jl.Output(2, v, "level", "error")
+}
+
+func (jl *JsonLogger) Warn(v ...interface{}) {
+	m := array2map(v)
+	m["level"] = "warn"
+	jl.Output(2, m)
+}
+
+func (jl *JsonLogger) Info(v ...interface{}) {
+	m := array2map(v)
+	m["level"] = "info"
+	jl.Output(2, m)
+}
+
+func (jl *JsonLogger) Error(v ...interface{}) {
+	m := array2map(v)
+	m["level"] = "error"
+	jl.Output(2, m)
+}
+
+func (jl *JsonLogger) Pwarn(v ...interface{}) {
+	msg := fmt.Sprint(v...)
+	jl.Output(2, LogFields{jl.messageFieldName: msg, "level": "warn"})
+}
+
+func (jl *JsonLogger) Pinfo(v ...interface{}) {
+	msg := fmt.Sprint(v...)
+	jl.Output(2, LogFields{jl.messageFieldName: msg, "level": "info"})
+}
+
+func (jl *JsonLogger) Perror(v ...interface{}) {
+	msg := fmt.Sprint(v...)
+	jl.Output(2, LogFields{jl.messageFieldName: msg, "level": "error"})
+}
+
+func (jl *JsonLogger) Pwarnf(f string, v ...interface{}) {
+	msg := fmt.Sprintf(f, v...)
+	jl.Output(2, LogFields{jl.messageFieldName: msg, "level": "warn"})
+}
+
+func (jl *JsonLogger) Pinfof(f string, v ...interface{}) {
+	msg := fmt.Sprintf(f, v...)
+	jl.Output(2, LogFields{jl.messageFieldName: msg, "level": "info"})
+}
+func (jl *JsonLogger) Perrorf(f string, v ...interface{}) {
+	msg := fmt.Sprintf(f, v...)
+	jl.Output(2, LogFields{jl.messageFieldName: msg, "level": "error"})
 }
 
 func (jl *JsonLogger) SetMessageFieldName(s string) *JsonLogger {
@@ -87,8 +164,23 @@ func (jl *JsonLogger) SetMessageFieldName(s string) *JsonLogger {
 	return jl
 }
 
+func (jl *JsonLogger) AddFields(fields LogFields) *JsonLogger {
+	if fields != nil && len(fields) > 0 {
+		if jl.fields == nil {
+			jl.fields = make(map[string]interface{})
+		}
+		for k, v := range fields {
+			if k != "" {
+				jl.fields[k] = v
+			}
+		}
+	}
+	return jl
+}
+
 func (jl *JsonLogger) SetFields(fields LogFields) *JsonLogger {
-	jl.fields = fields
+	jl.fields = nil
+	jl.AddFields(fields)
 	return jl
 }
 
@@ -97,9 +189,18 @@ func (jl *JsonLogger) SetOutputSourceFile(b bool) *JsonLogger {
 	return jl
 }
 
-// create a new JsonLogger instance with the same underlying fields
-// but replacing the fields with the given LogFields
-func (jl *JsonLogger) CloneWithFields(fields LogFields) *JsonLogger {
+func (jl *JsonLogger) CloneWithFields(newFields LogFields) *JsonLogger {
+	fields := make(map[string]interface{})
+	if jl.fields != nil && len(jl.fields) > 0 {
+		for k, v := range jl.fields {
+			fields[k] = v
+		}
+	}
+	if newFields != nil && len(newFields) > 0 {
+		for k, v := range newFields {
+			fields[k] = v
+		}
+	}
 	return &JsonLogger{
 		messageFieldName: jl.messageFieldName,
 		outputSourceFile: jl.outputSourceFile,
@@ -112,5 +213,6 @@ func NewJsonLogger(out io.Writer) *JsonLogger {
 	return &JsonLogger{
 		l:                log.New(out, "", 0),
 		messageFieldName: "message",
+		outputSourceFile: true,
 	}
 }

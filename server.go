@@ -18,20 +18,12 @@ const (
 	CtxKeyReqId     CtxKey = "req-id"
 	CtxKeyReqLogger        = "req-app-logger"
 
-	HttpHeaderRequestId string = "X-Request-Id"
+	HeaderRequestId string = "X-Request-Id"
 )
-
-func WithRequestId(ctx context.Context, reqId string) context.Context {
-	return context.WithValue(ctx, CtxKeyReqId, reqId)
-}
-
-func RequestIdFromReq(req *http.Request) string {
-	return req.Context().Value(CtxKeyReqId).(string)
-}
 
 func WithCtxLogger(ctx context.Context, jl *JsonLogger, reqId string) context.Context {
 	return context.WithValue(ctx, CtxKeyReqLogger, jl.CloneWithFields(LogFields{
-		"req-id": reqId,
+		"req_id": reqId,
 	}))
 }
 
@@ -105,7 +97,7 @@ type Endpoint struct {
 
 func wrapRequestAndResponse(w http.ResponseWriter, r *http.Request, app *AppRuntime) (*ResponseWriter, *http.Request) {
 	reqId := xid.New().String()
-	w.Header().Set(HttpHeaderRequestId, reqId)
+	w.Header().Set(HeaderRequestId, reqId)
 	ww := &ResponseWriter{
 		w:           w,
 		status:      http.StatusNotFound,
@@ -114,14 +106,13 @@ func wrapRequestAndResponse(w http.ResponseWriter, r *http.Request, app *AppRunt
 	}
 
 	ctx := r.Context()
-	ctx = WithRequestId(ctx, reqId)
-	ctx = WithCtxLogger(ctx, app.logger, reqId)
+	ctx = WithCtxLogger(ctx, app.Logger, reqId)
 	wr := r.WithContext(ctx)
 
 	return ww, wr
 }
 
-func logRequest(w *ResponseWriter, r *http.Request, logger *JsonLogger) {
+func logRequest(w *ResponseWriter, r *http.Request) {
 	processDuration := time.Now().UTC().Sub(w.requestTime)
 	referer := r.Referer()
 	if referer == "" {
@@ -146,20 +137,18 @@ func logRequest(w *ResponseWriter, r *http.Request, logger *JsonLogger) {
 	if clientIp == "" {
 		clientIp = "-"
 	}
-	requestId := r.Context().Value(CtxKeyReqId)
-	logger.LogMap(LogFields{
-		"_log_type":      "http-access",
-		"client_ip":      clientIp,
-		"req_id":         requestId,
-		"req_ts":         w.requestTime.Format("2006-01-02T15:04:05.000Z"),
-		"req_method":     r.Method,
-		"req_uri":        r.RequestURI,
-		"req_protocol":   r.Proto,
-		"resp_status":    w.status,
-		"resp_body_size": w.bytesWrote,
-		"process_time":   processDuration.Nanoseconds(),
-		"referer":        referer,
-		"user_agent":     userAgent,
+	CtxLoggerFromReq(r).LogMap(LogFields{
+		"log_group":        "http-access",
+		"req_remote_ip":    clientIp,
+		"req_ts":           w.requestTime.Format("2006-01-02T15:04:05.000Z"),
+		"req_method":       r.Method,
+		"req_uri":          r.RequestURI,
+		"req_protocol":     r.Proto,
+		"req_process_time": processDuration.Nanoseconds(),
+		"resp_status":      w.status,
+		"resp_body_size":   w.bytesWrote,
+		"req_referer":      referer,
+		"req_user_agent":   userAgent,
 	})
 }
 
@@ -181,9 +170,9 @@ func (e *Endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		d = h(ww, wr, e.app)
 	}
 	if err := d.Write(ww); err != nil {
-		e.app.logger.LogFields("error", err.Error())
+		CtxLoggerFromReq(wr).Perror(err)
 	}
-	logRequest(ww, wr, e.app.logger)
+	logRequest(ww, wr)
 }
 
 func registerHandlers(app *AppRuntime) {
@@ -191,16 +180,14 @@ func registerHandlers(app *AppRuntime) {
 }
 
 func StartAPIServer(app *AppRuntime) error {
-	conf := app.conf
-	logger := app.logger
-
-	// create server
+	conf := app.Conf
+	logger := app.Logger
 
 	// register routes and handlers
 	registerHandlers(app)
 
 	// start server
 	address := fmt.Sprintf("%v:%v", conf.ServerIP, conf.ServerPort)
-	logger.Printf("starting api server on %v ...", address)
+	logger.Pinfof("starting api server on %v", address)
 	return http.ListenAndServe(address, nil)
 }

@@ -12,11 +12,7 @@ import (
 )
 
 var (
-	articleIndexDef         string
-	articleIndexTypePublish string
-	articleIndexTypeVersion string
-	articleIndexTypeDraft   string
-	articleIndexTypeLock    string
+	articleIndexDef string
 
 	articleIndexTypes = &ArticleIndexTypes{
 		Publish: "publish",
@@ -69,6 +65,11 @@ func init() {
 
 // Application Configurations
 type AppConf struct {
+
+	// App ID, appears in every log entry so that if logs are sent to
+	// elasticsearch it will be easy to tell from logs from other
+	// application
+	AppId string
 
 	// Host to bind the http server
 	ServerIP string
@@ -139,6 +140,7 @@ func ParseArgs(args []string) *AppConf {
 	// parse command line args
 	var cli = flag.NewFlagSet("story-api", flag.ExitOnError)
 	var help = cli.Bool("help", false, "Print usage and exit.")
+	var appId = cli.String("app-id", "article-api", "ID for this application.")
 	var serverIP = cli.String("server-ip", "0.0.0.0", "IP address this API server binds to.")
 	var serverPort = cli.Int("server-port", 8080, "Port this API server listens on.")
 	var esHostStr = cli.String("es-hosts", "127.0.0.1:9200", "Elasticsearch server hosts (comma separated).")
@@ -153,15 +155,19 @@ func ParseArgs(args []string) *AppConf {
 	}
 
 	// validate given args
+	if *appId == "" {
+		panic("App ID is blank!")
+	}
 	if err := checkIPAndPort(*serverIP, *serverPort); err != nil {
-		panic(err)
+		panic(err.Error())
 	}
 	esHosts, err := parseESHosts(*esHostStr)
 	if err != nil {
-		panic(err)
+		panic(err.Error())
 	}
 
 	return &AppConf{
+		AppId:      *appId,
 		ServerIP:   *serverIP,
 		ServerPort: *serverPort,
 		ESHosts:    esHosts,

@@ -7,35 +7,34 @@ import (
 )
 
 type AppRuntime struct {
-	logger  *JsonLogger
-	conf    *AppConf
-	elastic *Elastic
+	Logger  *JsonLogger
+	Conf    *AppConf
+	Elastic *Elastic
 }
 
 func main() {
 
-	logger := NewJsonLogger(os.Stdout).SetOutputSourceFile(true).SetFields(LogFields{
-		"_log_type": "app",
-	})
-	logger.Printf("starting with args %v", os.Args)
-
 	conf := ParseArgs(os.Args)
-	logger.Printf("loaded app-conf: %v", conf.String())
+	logger := NewJsonLogger(os.Stdout).SetFields(LogFields{
+		"app_id":    conf.AppId,
+		"log_group": "app",
+	})
+	logger.Pinfof("starting %v with conf: %v", conf.AppId, conf.String())
 
 	elastic, err := NewElastic(conf.ESHosts)
 	if err != nil {
 		panic(err)
 	}
 	if ok, msg := elastic.CreateIndex(conf.ArticleIndex); ok {
-		logger.Print(msg)
+		logger.Pinfo(msg)
 	} else {
 		panic(fmt.Sprintf("failed to create index %v, error: %v", conf.ArticleIndex.Name, msg))
 	}
 
 	app := &AppRuntime{
-		logger:  logger,
-		conf:    conf,
-		elastic: elastic,
+		Logger:  logger,
+		Conf:    conf,
+		Elastic: elastic,
 	}
 
 	err = StartAPIServer(app)
