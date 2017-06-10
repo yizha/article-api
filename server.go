@@ -15,9 +15,9 @@ import (
 type CtxKey string
 
 const (
-	CtxKeyReqLogger CtxKey = "req-app-logger"
-	CtxKeyUsername         = "username"
-	CtxKeyId               = "id"
+	CtxKeyLogger CtxKey = "logger"
+	CtxKeyUser          = "user"
+	CtxKeyId            = "id"
 )
 
 func WithCtxStringValue(ctx context.Context, key CtxKey, val string) context.Context {
@@ -29,13 +29,13 @@ func StringFromReq(req *http.Request, key CtxKey) string {
 }
 
 func WithCtxLogger(ctx context.Context, jl *JsonLogger, reqId string) context.Context {
-	return context.WithValue(ctx, CtxKeyReqLogger, jl.CloneWithFields(LogFields{
+	return context.WithValue(ctx, CtxKeyLogger, jl.CloneWithFields(LogFields{
 		"req_id": reqId,
 	}))
 }
 
 func CtxLoggerFromReq(req *http.Request) *JsonLogger {
-	return req.Context().Value(CtxKeyReqLogger).(*JsonLogger)
+	return req.Context().Value(CtxKeyLogger).(*JsonLogger)
 }
 
 type ResponseWriter struct {
@@ -187,6 +187,7 @@ func registerHandlers(app *AppRuntime) {
 	   unpublish article  /article/unpublish?id=x  GET returns data
 	*/
 	http.Handle("/article/create", createHandlerFunc(app, http.MethodGet, ArticleCreate(app)))
+	http.Handle("/article/edit", createHandlerFunc(app, http.MethodGet, ArticleEdit(app)))
 }
 
 func StartAPIServer(app *AppRuntime) error {

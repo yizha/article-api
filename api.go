@@ -20,6 +20,18 @@ const (
 	ESIndexOpCreate string = "create"
 )
 
+func GetRequiredStringArg(app *AppRuntime, argName string, ctxKey CtxKey, h EndpointHandler) EndpointHandler {
+	return func(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+		val, d := ParseQueryStringValue(r.URL.Query(), argName, true, "")
+		if d != nil {
+			return d
+		} else {
+			r = r.WithContext(WithCtxStringValue(r.Context(), ctxKey, val))
+			return h(app, w, r)
+		}
+	}
+}
+
 func CreateRespData(status int, contentType, body string) *HttpResponseData {
 	return &HttpResponseData{
 		Status: status,
@@ -43,6 +55,16 @@ func CreateInternalServerErrorRespData(body string) *HttpResponseData {
 func CreateBadRequestRespData(body string) *HttpResponseData {
 	return &HttpResponseData{
 		Status: http.StatusBadRequest,
+		Header: map[string][]string{
+			"Content-Type": []string{ContentTypeValueText},
+		},
+		Body: strings.NewReader(body),
+	}
+}
+
+func CreateNotFoundRespData(body string) *HttpResponseData {
+	return &HttpResponseData{
+		Status: http.StatusNotFound,
 		Header: map[string][]string{
 			"Content-Type": []string{ContentTypeValueText},
 		},

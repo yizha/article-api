@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
+
+	elastic "gopkg.in/olivere/elastic.v5"
 )
 
 type JSONTime struct {
@@ -67,36 +70,8 @@ func unmarshalArticle(data []byte) (*Article, error) {
 	return (&a).NilZeroTimeFields(), nil
 }
 
-func getUsername(app *AppRuntime, h EndpointHandler) EndpointHandler {
-	return func(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
-		username, d := ParseQueryStringValue(r.URL.Query(), "user", true, "")
-		if d != nil {
-			return d
-		} else {
-			r = r.WithContext(WithCtxStringValue(r.Context(), CtxKeyUsername, username))
-			return h(app, w, r)
-		}
-	}
-}
-
-func getArticleId(app *AppRuntime, h EndpointHandler) EndpointHandler {
-	return func(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
-		id, d := ParseQueryStringValue(r.URL.Query(), "id", true, "")
-		if d != nil {
-			return d
-		} else {
-			r = r.WithContext(WithCtxStringValue(r.Context(), CtxKeyId, id))
-			return h(app, w, r)
-		}
-	}
-}
-
-func ArticleCreate(app *AppRuntime) EndpointHandler {
-	return getUsername(app, handleCreateArticle)
-}
-
 func handleCreateArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
-	username := StringFromReq(r, CtxKeyUsername)
+	username := StringFromReq(r, CtxKeyUser)
 	article := &Article{
 		LockedBy: username,
 	}
@@ -119,4 +94,115 @@ func handleCreateArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request
 			return CreateInternalServerErrorRespData(body)
 		}
 	}
+}
+
+func getFullArticle(
+	client *elastic.Client,
+	ctx context.Context,
+	index, typ, articleId string) (*Article, *HttpResponseData) {
+	source := elastic.NewFetchSourceContext(true).Include(
+		"headline",
+		"summary",
+		"content",
+		"tag",
+		"created_at",
+		"created_by",
+		"revised_at",
+		"revised_by",
+		"version",
+		"from_version",
+		"note",
+		"locked_by",
+	)
+	return getArticle(client, ctx, index, typ, articleId, source)
+}
+
+func getArticle(
+	client *elastic.Client,
+	ctx context.Context,
+	index, typ, articleId string,
+	source *elastic.FetchSourceContext) (*Article, *HttpResponseData) {
+	getService := client.Get()
+	getService.Index(index)
+	getService.Type(typ)
+	getService.Realtime(true)
+	getService.Id(articleId)
+	getService.FetchSourceContext(source)
+	resp, err := getService.Do(ctx)
+	if err != nil {
+		body := fmt.Sprintf("error querying elasticsearch, error: %v", err)
+		return nil, CreateInternalServerErrorRespData(body)
+	} else if !resp.Found {
+		body := fmt.Sprintf("article version %v not found!", articleId)
+		return nil, CreateNotFoundRespData(body)
+	} else {
+		article := &Article{}
+		if err := json.Unmarshal(*resp.Source, article); err != nil {
+			body := fmt.Sprintf("unmarshal article error: %v", err)
+			return nil, CreateInternalServerErrorRespData(body)
+		} else {
+			return article, nil
+		}
+	}
+}
+
+func marshalArticle(a *Article, status int) *HttpResponseData {
+	bytes, err := json.Marshal(a)
+	if err != nil {
+		body := fmt.Sprintf("error marshaling article: %v", err)
+		return CreateInternalServerErrorRespData(body)
+	} else {
+		return CreateRespData(status, ContentTypeValueJSON, string(bytes))
+	}
+}
+
+func handleEditArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	// first get the article
+	articleId := StringFromReq(r, CtxKeyId)
+	client := app.Elastic.Client
+	ctx := app.Elastic.Context
+	index := app.Conf.ArticleIndex.Name
+	article, d := getFullArticle(client, ctx, index, app.Conf.ArticleIndexTypes.Version, articleId)
+	if d != nil {
+		return d
+	}
+	// set article props
+	user := StringFromReq(r, CtxKeyUser)
+	article.FromVersion = article.Version
+	article.RevisedAt = nil
+	article.RevisedBy = user
+	article.LockedBy = user
+	// now try to index (create) it as type draft
+	typ := app.Conf.ArticleIndexTypes.Draft
+	idxService := client.Index()
+	idxService.Index(index)
+	idxService.Type(typ)
+	idxService.OpType(ESIndexOpCreate)
+	idxService.Id(articleId)
+	idxService.BodyJson(article)
+	resp, err := idxService.Do(ctx)
+	if err != nil {
+		body := fmt.Sprintf("error querying elasticsearch, error: %v", err)
+		return CreateInternalServerErrorRespData(body)
+	} else if !resp.Created {
+		// same doc already there? try to load it
+		source := elastic.NewFetchSourceContext(true).Include("from_version", "locked_by")
+		article, d = getArticle(client, ctx, index, typ, articleId, source)
+		if d != nil {
+			return d
+		} else {
+			return marshalArticle(article, http.StatusConflict)
+		}
+	} else {
+		return marshalArticle(article, http.StatusOK)
+	}
+}
+
+func ArticleCreate(app *AppRuntime) EndpointHandler {
+	return GetRequiredStringArg(app, "user", CtxKeyUser, handleCreateArticle)
+}
+
+func ArticleEdit(app *AppRuntime) EndpointHandler {
+	h := GetRequiredStringArg(app, "user", CtxKeyUser, handleEditArticle)
+	return GetRequiredStringArg(app, "id", CtxKeyId, h)
 }
