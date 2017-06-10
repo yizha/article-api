@@ -17,8 +17,6 @@ type CtxKey string
 const (
 	CtxKeyReqId     CtxKey = "req-id"
 	CtxKeyReqLogger        = "req-app-logger"
-
-	HeaderRequestId string = "X-Request-Id"
 )
 
 func WithCtxLogger(ctx context.Context, jl *JsonLogger, reqId string) context.Context {
@@ -88,13 +86,6 @@ func CreateHeader(kv ...string) http.Header {
 	return http.Header(m)
 }
 
-type EndpointMethodHandler func(http.ResponseWriter, *http.Request, *AppRuntime) *HttpResponseData
-type EndpointHandler map[string]EndpointMethodHandler
-type Endpoint struct {
-	app      *AppRuntime
-	handlers EndpointHandler
-}
-
 func wrapRequestAndResponse(w http.ResponseWriter, r *http.Request, app *AppRuntime) (*ResponseWriter, *http.Request) {
 	reqId := xid.New().String()
 	w.Header().Set(HeaderRequestId, reqId)
@@ -152,31 +143,41 @@ func logRequest(w *ResponseWriter, r *http.Request) {
 	})
 }
 
-func (e *Endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ww, wr := wrapRequestAndResponse(w, r, e.app)
-	var d *HttpResponseData
-	if h, ok := e.handlers[r.Method]; !ok {
-		allow := make([]string, 0, len(e.handlers))
-		for m, _ := range e.handlers {
-			allow = append(allow, m)
+type EndpointHandler func(http.ResponseWriter, *http.Request, *AppRuntime) *HttpResponseData
+
+func createHandlerFunc(app *AppRuntime, method string, h EndpointHandler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ww, wr := wrapRequestAndResponse(w, r, app)
+		var d *HttpResponseData
+		if method != r.Method {
+			d = &HttpResponseData{
+				Status: http.StatusMethodNotAllowed,
+				Header: CreateHeader("Content-Type", "text/plain; charset=utf-8", "Allow", method),
+				Body:   strings.NewReader(fmt.Sprintf("Method %v not allowed for resource %v", r.Method, r.URL.Path)),
+			}
+		} else {
+			d = h(ww, wr, app)
 		}
-		allowHeader := strings.Join(allow, ", ")
-		d = &HttpResponseData{
-			Status: http.StatusMethodNotAllowed,
-			Header: CreateHeader("Content-Type", "text/plain; charset=utf-8", "Allow", allowHeader),
-			Body:   strings.NewReader(fmt.Sprintf("Method %v not allowed for resource %v", r.Method, r.URL.Path)),
+		if err := d.Write(ww); err != nil {
+			CtxLoggerFromReq(wr).Perror(err)
 		}
-	} else {
-		d = h(ww, wr, e.app)
-	}
-	if err := d.Write(ww); err != nil {
-		CtxLoggerFromReq(wr).Perror(err)
-	}
-	logRequest(ww, wr)
+		logRequest(ww, wr)
+	})
 }
 
 func registerHandlers(app *AppRuntime) {
-	http.Handle("/keepalive", &Endpoint{app, Keepalive()})
+	http.Handle("/keepalive", createHandlerFunc(app, http.MethodGet, Keepalive))
+
+	/*
+	   new       article  /article/create          GET returns data
+	   edit      article  /article/edit?id=x       GET returns data
+	   save      changes  /article/save?id=x       PUT with data
+	   submit    changes  /article/submit?id=x     PUT with data
+	   discard   changes  /article/discard?id=x    GET returns data
+	   publish   article  /article/publish?id=x    GET returns data
+	   unpublish article  /article/unpublish?id=x  GET returns data
+	*/
+	http.Handle("/article/create", createHandlerFunc(app, http.MethodGet, ArticleCreate))
 }
 
 func StartAPIServer(app *AppRuntime) error {

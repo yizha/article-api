@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-func handleKeepalive(w http.ResponseWriter, r *http.Request, app *AppRuntime) *HttpResponseData {
+func Keepalive(w http.ResponseWriter, r *http.Request, app *AppRuntime) *HttpResponseData {
 	//CtxLoggerFromReq(r).Print("logging from /keepalive handler.")
 	if resp, err := app.Elastic.Client.ClusterHealth().Do(app.Elastic.Context); err == nil {
 		if resp.Status == "red" {
@@ -29,10 +29,4 @@ func handleKeepalive(w http.ResponseWriter, r *http.Request, app *AppRuntime) *H
 			Body:   strings.NewReader(fmt.Sprintf("Failed to check elasticsearch server cluster health, error: %v", err)),
 		}
 	}
-}
-
-func Keepalive() EndpointHandler {
-	m := EndpointHandler(make(map[string]EndpointMethodHandler))
-	m[http.MethodGet] = handleKeepalive
-	return m
 }
