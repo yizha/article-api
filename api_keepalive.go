@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-func Keepalive(w http.ResponseWriter, r *http.Request, app *AppRuntime) *HttpResponseData {
+func Keepalive(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
 	//CtxLoggerFromReq(r).Print("logging from /keepalive handler.")
 	if resp, err := app.Elastic.Client.ClusterHealth().Do(app.Elastic.Context); err == nil {
 		if resp.Status == "red" {

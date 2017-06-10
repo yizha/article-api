@@ -15,9 +15,18 @@ import (
 type CtxKey string
 
 const (
-	CtxKeyReqId     CtxKey = "req-id"
-	CtxKeyReqLogger        = "req-app-logger"
+	CtxKeyReqLogger CtxKey = "req-app-logger"
+	CtxKeyUsername         = "username"
+	CtxKeyId               = "id"
 )
+
+func WithCtxStringValue(ctx context.Context, key CtxKey, val string) context.Context {
+	return context.WithValue(ctx, key, val)
+}
+
+func StringFromReq(req *http.Request, key CtxKey) string {
+	return req.Context().Value(key).(string)
+}
 
 func WithCtxLogger(ctx context.Context, jl *JsonLogger, reqId string) context.Context {
 	return context.WithValue(ctx, CtxKeyReqLogger, jl.CloneWithFields(LogFields{
@@ -143,7 +152,7 @@ func logRequest(w *ResponseWriter, r *http.Request) {
 	})
 }
 
-type EndpointHandler func(http.ResponseWriter, *http.Request, *AppRuntime) *HttpResponseData
+type EndpointHandler func(*AppRuntime, http.ResponseWriter, *http.Request) *HttpResponseData
 
 func createHandlerFunc(app *AppRuntime, method string, h EndpointHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +165,7 @@ func createHandlerFunc(app *AppRuntime, method string, h EndpointHandler) http.H
 				Body:   strings.NewReader(fmt.Sprintf("Method %v not allowed for resource %v", r.Method, r.URL.Path)),
 			}
 		} else {
-			d = h(ww, wr, app)
+			d = h(app, ww, wr)
 		}
 		if err := d.Write(ww); err != nil {
 			CtxLoggerFromReq(wr).Perror(err)
@@ -177,7 +186,7 @@ func registerHandlers(app *AppRuntime) {
 	   publish   article  /article/publish?id=x    GET returns data
 	   unpublish article  /article/unpublish?id=x  GET returns data
 	*/
-	http.Handle("/article/create", createHandlerFunc(app, http.MethodGet, ArticleCreate))
+	http.Handle("/article/create", createHandlerFunc(app, http.MethodGet, ArticleCreate(app)))
 }
 
 func StartAPIServer(app *AppRuntime) error {
