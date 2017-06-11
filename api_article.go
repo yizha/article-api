@@ -37,6 +37,8 @@ func (t *JSONTime) UnmarshalJSON(data []byte) error {
 
 type Article struct {
 	Id          string    `json:"id,omitempty"`
+	Guid        string    `json:"guid,omitempty"`
+	Version     int64     `json:"version,omitempty"`
 	Headline    string    `json:"headline,omitempty"`
 	Summary     string    `json:"summary,omitempty"`
 	Content     string    `json:"content,omitempty"`
@@ -45,7 +47,6 @@ type Article struct {
 	CreatedBy   string    `json:"created_by,omitempty"`
 	RevisedAt   *JSONTime `json:"revised_at,omitempty"`
 	RevisedBy   string    `json:"revised_by,omitempty"`
-	Version     int64     `json:"version,omitempty"`
 	FromVersion int64     `json:"from_version,omitempty"`
 	Note        string    `json:"note,omitempty"`
 	LockedBy    string    `json:"locked_by,omitempty"`
@@ -86,7 +87,9 @@ func handleCreateArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request
 		return CreateInternalServerErrorRespData(body)
 	} else {
 		article.Id = resp.Id
+		article.Guid = resp.Id
 		article.CreatedBy = username
+		article.LockedBy = username
 		if bytes, err := json.Marshal(article); err == nil {
 			return CreateRespData(http.StatusOK, ContentTypeValueJSON, string(bytes))
 		} else {
@@ -99,8 +102,9 @@ func handleCreateArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request
 func getFullArticle(
 	client *elastic.Client,
 	ctx context.Context,
-	index, typ, articleId string) (*Article, *HttpResponseData) {
+	index, typ, id string) (*Article, *HttpResponseData) {
 	source := elastic.NewFetchSourceContext(true).Include(
+		"guid",
 		"headline",
 		"summary",
 		"content",
@@ -114,26 +118,31 @@ func getFullArticle(
 		"note",
 		"locked_by",
 	)
-	return getArticle(client, ctx, index, typ, articleId, source)
+	return getArticle(client, ctx, index, typ, id, source)
 }
 
 func getArticle(
 	client *elastic.Client,
 	ctx context.Context,
-	index, typ, articleId string,
+	index, typ, id string,
 	source *elastic.FetchSourceContext) (*Article, *HttpResponseData) {
 	getService := client.Get()
 	getService.Index(index)
 	getService.Type(typ)
-	getService.Realtime(true)
-	getService.Id(articleId)
+	getService.Realtime(false)
+	getService.Id(id)
 	getService.FetchSourceContext(source)
 	resp, err := getService.Do(ctx)
 	if err != nil {
-		body := fmt.Sprintf("error querying elasticsearch, error: %v", err)
-		return nil, CreateInternalServerErrorRespData(body)
+		if elastic.IsNotFound(err) {
+			body := fmt.Sprintf("article %v not found in index %v type %v!", id, index, typ)
+			return nil, CreateNotFoundRespData(body)
+		} else {
+			body := fmt.Sprintf("1error querying elasticsearch, error: %v", err)
+			return nil, CreateInternalServerErrorRespData(body)
+		}
 	} else if !resp.Found {
-		body := fmt.Sprintf("article version %v not found!", articleId)
+		body := fmt.Sprintf("article %v not found in index %v type %v!", id, index, typ)
 		return nil, CreateNotFoundRespData(body)
 	} else {
 		article := &Article{}
@@ -141,6 +150,7 @@ func getArticle(
 			body := fmt.Sprintf("unmarshal article error: %v", err)
 			return nil, CreateInternalServerErrorRespData(body)
 		} else {
+			article.Id = resp.Id
 			return article, nil
 		}
 	}
@@ -157,23 +167,27 @@ func marshalArticle(a *Article, status int) *HttpResponseData {
 }
 
 func handleEditArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
-	// first get the article
+	// first get the article from the version type
 	articleId := StringFromReq(r, CtxKeyId)
+	articleVer := StringFromReq(r, CtxKeyVer)
 	client := app.Elastic.Client
 	ctx := app.Elastic.Context
 	index := app.Conf.ArticleIndex.Name
-	article, d := getFullArticle(client, ctx, index, app.Conf.ArticleIndexTypes.Version, articleId)
+	typ := app.Conf.ArticleIndexTypes.Version
+	id := fmt.Sprintf("%s:%s", articleId, articleVer)
+	article, d := getFullArticle(client, ctx, index, typ, id)
 	if d != nil {
 		return d
 	}
 	// set article props
 	user := StringFromReq(r, CtxKeyUser)
 	article.FromVersion = article.Version
+	article.Version = 0
 	article.RevisedAt = nil
 	article.RevisedBy = user
 	article.LockedBy = user
 	// now try to index (create) it as type draft
-	typ := app.Conf.ArticleIndexTypes.Draft
+	typ = app.Conf.ArticleIndexTypes.Draft
 	idxService := client.Index()
 	idxService.Index(index)
 	idxService.Type(typ)
@@ -186,9 +200,16 @@ func handleEditArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) 
 		return CreateInternalServerErrorRespData(body)
 	} else if !resp.Created {
 		// same doc already there? try to load it
-		source := elastic.NewFetchSourceContext(true).Include("from_version", "locked_by")
+		source := elastic.NewFetchSourceContext(true).Include("guid", "version", "from_version", "locked_by")
 		article, d = getArticle(client, ctx, index, typ, articleId, source)
 		if d != nil {
+			// edge case: affending resource not found (404),
+			// return 409 so that caller could give it another try
+			if d.Status == http.StatusNotFound {
+				d = marshalArticle(&Article{
+					Guid: article.Guid,
+				}, http.StatusConflict)
+			}
 			return d
 		} else {
 			return marshalArticle(article, http.StatusConflict)
@@ -204,5 +225,6 @@ func ArticleCreate(app *AppRuntime) EndpointHandler {
 
 func ArticleEdit(app *AppRuntime) EndpointHandler {
 	h := GetRequiredStringArg(app, "user", CtxKeyUser, handleEditArticle)
-	return GetRequiredStringArg(app, "id", CtxKeyId, h)
+	h = GetRequiredStringArg(app, "id", CtxKeyId, h)
+	return GetRequiredStringArg(app, "ver", CtxKeyVer, h)
 }

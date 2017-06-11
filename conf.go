@@ -30,6 +30,7 @@ var (
 func init() {
 	articleMappingProps := map[string]map[string]map[string]interface{}{
 		"properties": map[string]map[string]interface{}{
+			"guid":         map[string]interface{}{"type": "keyword"},
 			"headline":     map[string]interface{}{"type": "text"},
 			"summary":      map[string]interface{}{"type": "text", "index": "false"},
 			"content":      map[string]interface{}{"type": "text"},

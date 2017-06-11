@@ -18,6 +18,7 @@ const (
 	CtxKeyLogger CtxKey = "logger"
 	CtxKeyUser          = "user"
 	CtxKeyId            = "id"
+	CtxKeyVer           = "ver"
 )
 
 func WithCtxStringValue(ctx context.Context, key CtxKey, val string) context.Context {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -66,10 +67,13 @@ func (jl *JsonLogger) Output(calldepth int, v LogFields, x ...interface{}) {
 	ts := time.Now().UTC()
 	m["log_ts"] = ts.UnixNano()
 	m["log_time"] = ts.Format("2006-01-02T15:04:05.000Z")
-	bytes, err := json.Marshal(m)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	err := enc.Encode(m)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to encoding %v to json, error: %v", v, err)
-	} else if err = jl.l.Output(calldepth, string(bytes)); err != nil {
+	} else if err = jl.l.Output(calldepth, buf.String()); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to log, error: %v", err)
 	}
 }
