@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -26,7 +27,15 @@ func WithCtxStringValue(ctx context.Context, key CtxKey, val string) context.Con
 }
 
 func StringFromReq(req *http.Request, key CtxKey) string {
-	return req.Context().Value(key).(string)
+	v := req.Context().Value(key)
+	if v == nil {
+		return ""
+	} else if s, ok := v.(string); ok {
+		return s
+	} else {
+		fmt.Fprintf(os.Stdout, "value (%T, %v) under key %v is not string!", v, v, key)
+		return ""
+	}
 }
 
 func WithCtxLogger(ctx context.Context, jl *JsonLogger, reqId string) context.Context {
@@ -65,6 +74,7 @@ type HttpResponseData struct {
 	Status int
 	Header http.Header
 	Body   io.Reader
+	Data   interface{}
 }
 
 func (data *HttpResponseData) Write(w http.ResponseWriter) error {
@@ -115,10 +125,12 @@ func wrapRequestAndResponse(w http.ResponseWriter, r *http.Request, app *AppRunt
 
 func logRequest(w *ResponseWriter, r *http.Request) {
 	processDuration := time.Now().UTC().Sub(w.requestTime)
-	referer := r.Referer()
-	if referer == "" {
-		referer = "-"
-	}
+	/*
+		referer := r.Referer()
+		if referer == "" {
+			referer = "-"
+		}
+	//*/
 	userAgent := r.UserAgent()
 	if userAgent == "" {
 		userAgent = "-"
@@ -148,8 +160,8 @@ func logRequest(w *ResponseWriter, r *http.Request) {
 		"req_process_time": processDuration.Nanoseconds(),
 		"resp_status":      w.status,
 		"resp_body_size":   w.bytesWrote,
-		"req_referer":      referer,
-		"req_user_agent":   userAgent,
+		//		"req_referer":      referer,
+		"req_user_agent": userAgent,
 	})
 }
 
@@ -162,7 +174,7 @@ func createHandlerFunc(app *AppRuntime, method string, h EndpointHandler) http.H
 		if method != r.Method {
 			d = &HttpResponseData{
 				Status: http.StatusMethodNotAllowed,
-				Header: CreateHeader("Content-Type", "text/plain; charset=utf-8", "Allow", method),
+				Header: CreateHeader(HeaderContentType, ContentTypeValueText, "Allow", method),
 				Body:   strings.NewReader(fmt.Sprintf("Method %v not allowed for resource %v", r.Method, r.URL.Path)),
 			}
 		} else {
@@ -189,6 +201,7 @@ func registerHandlers(app *AppRuntime) {
 	*/
 	http.Handle("/article/create", createHandlerFunc(app, http.MethodGet, ArticleCreate(app)))
 	http.Handle("/article/edit", createHandlerFunc(app, http.MethodGet, ArticleEdit(app)))
+	http.Handle("/article/save", createHandlerFunc(app, http.MethodPut, ArticleSave(app)))
 }
 
 func StartAPIServer(app *AppRuntime) error {

@@ -12,7 +12,8 @@ import (
 )
 
 const (
-	HeaderRequestId string = "X-Request-Id"
+	HeaderRequestId   string = "X-Request-Id"
+	HeaderContentType string = "Content-Type"
 
 	ContentTypeValueJSON string = "application/json; charset=utf-8"
 	ContentTypeValueText string = "text/plain; charset=utf-8"
@@ -36,7 +37,7 @@ func CreateRespData(status int, contentType, body string) *HttpResponseData {
 	return &HttpResponseData{
 		Status: status,
 		Header: map[string][]string{
-			"Content-Type": []string{contentType},
+			HeaderContentType: []string{contentType},
 		},
 		Body: strings.NewReader(body),
 	}
@@ -46,7 +47,7 @@ func CreateInternalServerErrorRespData(body string) *HttpResponseData {
 	return &HttpResponseData{
 		Status: http.StatusInternalServerError,
 		Header: map[string][]string{
-			"Content-Type": []string{ContentTypeValueText},
+			HeaderContentType: []string{ContentTypeValueText},
 		},
 		Body: strings.NewReader(body),
 	}
@@ -56,7 +57,7 @@ func CreateBadRequestRespData(body string) *HttpResponseData {
 	return &HttpResponseData{
 		Status: http.StatusBadRequest,
 		Header: map[string][]string{
-			"Content-Type": []string{ContentTypeValueText},
+			HeaderContentType: []string{ContentTypeValueText},
 		},
 		Body: strings.NewReader(body),
 	}
@@ -66,7 +67,17 @@ func CreateNotFoundRespData(body string) *HttpResponseData {
 	return &HttpResponseData{
 		Status: http.StatusNotFound,
 		Header: map[string][]string{
-			"Content-Type": []string{ContentTypeValueText},
+			HeaderContentType: []string{ContentTypeValueText},
+		},
+		Body: strings.NewReader(body),
+	}
+}
+
+func CreateForbiddenRespData(body string) *HttpResponseData {
+	return &HttpResponseData{
+		Status: http.StatusForbidden,
+		Header: map[string][]string{
+			HeaderContentType: []string{ContentTypeValueText},
 		},
 		Body: strings.NewReader(body),
 	}
