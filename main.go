@@ -22,7 +22,6 @@ func main() {
 		panic(fmt.Sprintf("failed to create log from spec %v, error: %v", conf.LoggingSpec.String(), err))
 	}
 	logger.SetFields(LogFields{
-		"app_id":    conf.AppId,
 		"log_group": "app",
 	})
 	logger.Pinfof("starting %v with conf: %v", conf.AppId, conf.String())

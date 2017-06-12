@@ -153,7 +153,7 @@ func logRequest(w *ResponseWriter, r *http.Request) {
 	CtxLoggerFromReq(r).LogMap(LogFields{
 		"log_group":        "http-access",
 		"req_remote_ip":    clientIp,
-		"req_ts":           w.requestTime.Format("2006-01-02T15:04:05.000Z"),
+		"req_time":         w.requestTime.Format("2006-01-02T15:04:05.000Z"),
 		"req_method":       r.Method,
 		"req_uri":          r.RequestURI,
 		"req_protocol":     r.Proto,
@@ -195,7 +195,11 @@ func registerHandlers(app *AppRuntime) {
 	// article endpoints
 	http.Handle("/article/create", createHandlerFunc(app, http.MethodGet, ArticleCreate(app)))
 	http.Handle("/article/edit", createHandlerFunc(app, http.MethodGet, ArticleEdit(app)))
-	http.Handle("/article/save", createHandlerFunc(app, http.MethodPut, ArticleSave(app)))
+	http.Handle("/article/save", createHandlerFunc(app, http.MethodPost, ArticleSave(app)))
+	http.Handle("/article/submit", createHandlerFunc(app, http.MethodPost, ArticleSubmit(app)))
+	http.Handle("/article/discard", createHandlerFunc(app, http.MethodGet, ArticleDiscard(app)))
+	http.Handle("/article/publish", createHandlerFunc(app, http.MethodGet, ArticlePublish(app)))
+	http.Handle("/article/unpublish", createHandlerFunc(app, http.MethodGet, ArticleUnpublish(app)))
 }
 
 func StartAPIServer(app *AppRuntime) error {

@@ -1,8 +1,8 @@
 /*
    /article/create     GET   [draft (create)]                           no lock
    /article/edit       GET   [version (read) --> draft (create)]        lock on draft
-   /article/save       PUT   [draft (update)]                           lock on draft
-   /article/submit     PUT   [draft (save/delete) --> version (create)] lock on draft
+   /article/save       POST  [draft (update)]                           lock on draft
+   /article/submit     POST  [draft (save/delete) --> version (create)] lock on draft
    /article/discard    GET   [draft (delete)]                           lock on draft
    /article/publish    GET   [version (read) --> publish (upsert)]      lock on publish
    /article/unpublish  GET   [publish (delete)]                         lock on publish
@@ -175,7 +175,7 @@ func getArticle(
 			body := fmt.Sprintf("article %v not found in index %v type %v!", id, index, typ)
 			return nil, CreateNotFoundRespData(body)
 		} else {
-			body := fmt.Sprintf("1error querying elasticsearch, error: %v", err)
+			body := fmt.Sprintf("failed to query elasticsearch, error: %v", err)
 			return nil, CreateInternalServerErrorRespData(body)
 		}
 	} else if !resp.Found {
@@ -231,6 +231,7 @@ func editArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 	idxService.BodyJson(article)
 
 	lock := draftLock.Get(article.Guid)
+	lock.Lock()
 	defer lock.Unlock()
 	resp, err := idxService.Do(ctx)
 	if err != nil {
@@ -290,6 +291,7 @@ func saveArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 	updService.DetectNoop(true)
 
 	lock := draftLock.Get(id)
+	lock.Lock()
 	defer lock.Unlock()
 	resp, err := updService.Do(context.Background())
 	//fmt.Printf("resp: %T, %+v\n", resp, resp)
@@ -397,6 +399,7 @@ func submitArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Htt
 	ctx := context.Background()
 
 	lock := draftLock.Get(guid)
+	lock.Lock()
 	defer lock.Unlock()
 	_, err = updService.Do(ctx)
 	if err != nil {
@@ -452,6 +455,88 @@ func submitArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Htt
 	return marshalArticle(article, http.StatusOK)
 }
 
+func discardArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	id := StringFromReq(r, CtxKeyId)
+	delService := app.Elastic.Client.Delete()
+	delService.Index(app.Conf.ArticleIndex.Name)
+	delService.Type(app.Conf.ArticleIndexTypes.Draft)
+	delService.Id(id)
+
+	lock := draftLock.Get(id)
+	lock.Lock()
+	defer lock.Unlock()
+	_, err := delService.Do(context.Background())
+	if err != nil {
+		if elastic.IsNotFound(err) {
+			body := fmt.Sprintf("article %v not found!", id)
+			return CreateNotFoundRespData(body)
+		} else {
+			body := fmt.Sprintf("failed to discard article, error: %v", err)
+			return CreateInternalServerErrorRespData(body)
+		}
+	} else {
+		return CreateRespData(http.StatusOK, ContentTypeValueText, "")
+	}
+}
+
+func publishArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	// load article from version
+	client := app.Elastic.Client
+	ctx := context.Background()
+	index := app.Conf.ArticleIndex.Name
+	typ := app.Conf.ArticleIndexTypes.Version
+	id := StringFromReq(r, CtxKeyId)
+	article, d := getFullArticle(client, ctx, index, typ, id)
+	if d != nil {
+		return d
+	}
+	// upsert it into publish
+	guid := article.Guid
+	article.Id = guid
+	article.LockedBy = ""
+	updService := client.Update()
+	updService.Index(index)
+	updService.Type(app.Conf.ArticleIndexTypes.Publish)
+	updService.Id(guid)
+	updService.Doc(article)
+	updService.DocAsUpsert(true)
+
+	lock := publishLock.Get(guid)
+	lock.Lock()
+	defer lock.Unlock()
+	_, err := updService.Do(ctx)
+	if err != nil {
+		body := fmt.Sprintf("failed to publish article, error: %v", err)
+		return CreateInternalServerErrorRespData(body)
+	} else {
+		return CreateRespData(http.StatusOK, ContentTypeValueText, "")
+	}
+}
+
+func unpublishArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	id := StringFromReq(r, CtxKeyId)
+	delService := app.Elastic.Client.Delete()
+	delService.Index(app.Conf.ArticleIndex.Name)
+	delService.Type(app.Conf.ArticleIndexTypes.Publish)
+	delService.Id(id)
+
+	lock := publishLock.Get(id)
+	lock.Lock()
+	defer lock.Unlock()
+	_, err := delService.Do(context.Background())
+	if err != nil {
+		if elastic.IsNotFound(err) {
+			body := fmt.Sprintf("article %v not found!", id)
+			return CreateNotFoundRespData(body)
+		} else {
+			body := fmt.Sprintf("failed to unpublish article, error: %v", err)
+			return CreateInternalServerErrorRespData(body)
+		}
+	} else {
+		return CreateRespData(http.StatusOK, ContentTypeValueText, "")
+	}
+}
+
 func ArticleCreate(app *AppRuntime) EndpointHandler {
 	h := addAuditLogFields(app, "create", createArticle)
 	return GetRequiredStringArg(app, "user", CtxKeyUser, h)
@@ -471,6 +556,24 @@ func ArticleSave(app *AppRuntime) EndpointHandler {
 
 func ArticleSubmit(app *AppRuntime) EndpointHandler {
 	h := addAuditLogFields(app, "submit", submitArticle)
+	h = GetRequiredStringArg(app, "user", CtxKeyUser, h)
+	return GetRequiredStringArg(app, "id", CtxKeyId, h)
+}
+
+func ArticleDiscard(app *AppRuntime) EndpointHandler {
+	h := addAuditLogFields(app, "discard", discardArticle)
+	h = GetRequiredStringArg(app, "user", CtxKeyUser, h)
+	return GetRequiredStringArg(app, "id", CtxKeyId, h)
+}
+
+func ArticlePublish(app *AppRuntime) EndpointHandler {
+	h := addAuditLogFields(app, "publish", publishArticle)
+	h = GetRequiredStringArg(app, "user", CtxKeyUser, h)
+	return GetRequiredStringArg(app, "id", CtxKeyId, h)
+}
+
+func ArticleUnpublish(app *AppRuntime) EndpointHandler {
+	h := addAuditLogFields(app, "unpublish", unpublishArticle)
 	h = GetRequiredStringArg(app, "user", CtxKeyUser, h)
 	return GetRequiredStringArg(app, "id", CtxKeyId, h)
 }
