@@ -1,3 +1,13 @@
+/*
+   /article/create     GET   [draft (create)]                           no lock
+   /article/edit       GET   [version (read) --> draft (create)]        lock on draft
+   /article/save       PUT   [draft (update)]                           lock on draft
+   /article/submit     PUT   [draft (save/delete) --> version (create)] lock on draft
+   /article/discard    GET   [draft (delete)]                           lock on draft
+   /article/publish    GET   [version (read) --> publish (upsert)]      lock on publish
+   /article/unpublish  GET   [publish (delete)]                         lock on publish
+*/
+
 package main
 
 import (
@@ -25,6 +35,11 @@ if (params.checkuser && ctx._source.locked_by != params.username) {
   ctx._source.tag = params.tag;
   ctx._source.note = params.note;
 }`
+)
+
+var (
+	draftLock   = &UniqStrMutex{}
+	publishLock = &UniqStrMutex{}
 )
 
 type JSONTime struct {
@@ -214,6 +229,9 @@ func editArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 	idxService.OpType(ESIndexOpCreate)
 	idxService.Id(article.Guid)
 	idxService.BodyJson(article)
+
+	lock := draftLock.Get(article.Guid)
+	defer lock.Unlock()
 	resp, err := idxService.Do(ctx)
 	if err != nil {
 		body := fmt.Sprintf("error querying elasticsearch, error: %v", err)
@@ -270,6 +288,9 @@ func saveArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 	updService.Id(id)
 	updService.Script(script)
 	updService.DetectNoop(true)
+
+	lock := draftLock.Get(id)
+	defer lock.Unlock()
 	resp, err := updService.Do(context.Background())
 	//fmt.Printf("resp: %T, %+v\n", resp, resp)
 	//fmt.Printf("error: %v\n", err)
@@ -374,6 +395,9 @@ func submitArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Htt
 	updService.Script(script)
 	updService.DetectNoop(false)
 	ctx := context.Background()
+
+	lock := draftLock.Get(guid)
+	defer lock.Unlock()
 	_, err = updService.Do(ctx)
 	if err != nil {
 		body := fmt.Sprintf("failed to save article draft %v, error: %v", guid, err)

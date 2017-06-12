@@ -188,17 +188,11 @@ func createHandlerFunc(app *AppRuntime, method string, h EndpointHandler) http.H
 }
 
 func registerHandlers(app *AppRuntime) {
+
+	// keepalive
 	http.Handle("/keepalive", createHandlerFunc(app, http.MethodGet, Keepalive))
 
-	/*
-	   new       article  /article/create          GET returns data
-	   edit      article  /article/edit?id=x       GET returns data
-	   save      changes  /article/save?id=x       PUT with data
-	   submit    changes  /article/submit?id=x     PUT with data
-	   discard   changes  /article/discard?id=x    GET returns data
-	   publish   article  /article/publish?id=x    GET returns data
-	   unpublish article  /article/unpublish?id=x  GET returns data
-	*/
+	// article endpoints
 	http.Handle("/article/create", createHandlerFunc(app, http.MethodGet, ArticleCreate(app)))
 	http.Handle("/article/edit", createHandlerFunc(app, http.MethodGet, ArticleEdit(app)))
 	http.Handle("/article/save", createHandlerFunc(app, http.MethodPut, ArticleSave(app)))
