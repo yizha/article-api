@@ -13,6 +13,7 @@ import (
 
 const (
 	HeaderRequestId   string = "X-Request-Id"
+	HeaderAuthToken   string = "X-Auth-Token"
 	HeaderContentType string = "Content-Type"
 
 	ContentTypeValueJSON string = "application/json; charset=utf-8"
@@ -21,7 +22,7 @@ const (
 	ESIndexOpCreate string = "create"
 )
 
-func GetRequiredStringArg(app *AppRuntime, argName string, ctxKey CtxKey, h EndpointHandler) EndpointHandler {
+func GetRequiredStringArg(argName string, ctxKey CtxKey, h EndpointHandler) EndpointHandler {
 	return func(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
 		val, d := ParseQueryStringValue(r.URL.Query(), argName, true, "")
 		if d != nil {
@@ -40,6 +41,27 @@ func CreateRespData(status int, contentType, body string) *HttpResponseData {
 			HeaderContentType: []string{contentType},
 		},
 		Body: strings.NewReader(body),
+	}
+}
+
+func CreateJsonRespData(status int, val interface{}) *HttpResponseData {
+	if bytes, err := json.Marshal(val); err == nil {
+		return &HttpResponseData{
+			Status: status,
+			Header: map[string][]string{
+				HeaderContentType: []string{ContentTypeValueJSON},
+			},
+			Body: strings.NewReader(string(bytes)),
+		}
+	} else {
+		body := fmt.Sprintf("failed to marshal json value, error: %v", err)
+		return &HttpResponseData{
+			Status: http.StatusInternalServerError,
+			Header: map[string][]string{
+				HeaderContentType: []string{ContentTypeValueText},
+			},
+			Body: strings.NewReader(body),
+		}
 	}
 }
 

@@ -12,6 +12,22 @@ type AppRuntime struct {
 	Elastic *Elastic
 }
 
+func createIndices(app *AppRuntime) {
+	conf := app.Conf
+	elastic := app.Elastic
+	logger := app.Logger
+	if ok, msg := elastic.CreateIndex(conf.ArticleIndex); ok {
+		logger.Pinfo(msg)
+	} else {
+		panic(fmt.Sprintf("failed to create index %v, error: %v", conf.ArticleIndex.Name, msg))
+	}
+	if ok, msg := elastic.CreateIndex(conf.UserIndex); ok {
+		logger.Pinfo(msg)
+	} else {
+		panic(fmt.Sprintf("failed to create index %v, error: %v", conf.UserIndex.Name, msg))
+	}
+}
+
 func main() {
 
 	conf := ParseArgs(os.Args)
@@ -32,21 +48,13 @@ func main() {
 		panic(err)
 	}
 
-	// create the index if it doesn't exist
-	if ok, msg := elastic.CreateIndex(conf.ArticleIndex); ok {
-		logger.Pinfo(msg)
-	} else {
-		panic(fmt.Sprintf("failed to create index %v, error: %v", conf.ArticleIndex.Name, msg))
-	}
-
 	app := &AppRuntime{
 		Logger:  logger,
 		Conf:    conf,
 		Elastic: elastic,
 	}
 
-	err = StartAPIServer(app)
-	if err != nil {
-		panic(err)
-	}
+	createIndices(app)
+
+	StartAPIServer(app)
 }

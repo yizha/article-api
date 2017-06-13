@@ -9,12 +9,19 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/gorilla/securecookie"
 )
 
 type ArticleIndexTypes struct {
 	Publish string
 	Version string
 	Draft   string
+}
+
+type UserIndexTypes struct {
+	User string
 }
 
 var (
@@ -24,6 +31,28 @@ var (
 		Publish: "publish",
 		Version: "version",
 		Draft:   "draft",
+	}
+
+	userIndexDef = `
+{
+  "settings" : {
+    "number_of_shards" :   4,
+    "number_of_replicas" : 1,
+	"index.mapper.dynamic": false
+  },
+  "mappings":{
+    "user":{
+      "properties":{
+        "username":        {"type": "keyword"},
+        "password":        {"type": "keyword", "index": false, "doc_values": false},
+        "role":            {"type": "keyword"}
+      }
+    }
+  }
+}`
+
+	userIndexTypes = &UserIndexTypes{
+		User: "user",
 	}
 )
 
@@ -145,8 +174,19 @@ type AppConf struct {
 	// Port to the http server listens on
 	ServerPort int
 
+	// server read timeout
+	ServerReadTimeout time.Duration
+
+	// server write timeout
+	ServerWriteTimeout time.Duration
+
 	// Elasticsearch Hosts
 	ESHosts []string
+
+	// Used to sign/encrypt/decrypt auth data with gorilla/securecookie
+	// This is hacky as the securecookie is meant for cookie but here
+	// we set the result string as an auth-token in header
+	SCookie *securecookie.SecureCookie
 
 	// logging spec
 	// Only support logging to stdout or file
@@ -160,6 +200,12 @@ type AppConf struct {
 
 	// article index types
 	ArticleIndexTypes *ArticleIndexTypes
+
+	// user index
+	UserIndex *ESIndex
+
+	// user type
+	UserIndexTypes *UserIndexTypes
 }
 
 func (c *AppConf) String() string {
@@ -219,7 +265,12 @@ func ParseArgs(args []string) *AppConf {
 	var help = cli.Bool("help", false, "Print usage and exit.")
 	var serverIP = cli.String("server-ip", "0.0.0.0", "IP address this API server binds to.")
 	var serverPort = cli.Int("server-port", 8080, "Port this API server listens on.")
+	var serverWriteTimeout = cli.Int("server-write-timeout", 15, "http server write timeout in seconds.")
+	var serverReadTimeout = cli.Int("server-read-timeout", 15, "http server read timeout in seconds.")
 	var esHostStr = cli.String("es-hosts", "127.0.0.1:9200", "Elasticsearch server hosts (comma separated).")
+	var hashKey = cli.String("hash-key", "", "Secret hash key used to sign data")
+	var blockKey = cli.String("block-key", "", "Secret block key used to encrypt/decrypt data")
+	var authExp = cli.Int("auth-expiration", 3600, "auth token expiration in seconds, set to 0 to not expire.")
 	var loggingSpec = &LoggingSpec{Target: LoggingTargetStdout}
 	cli.Var(loggingSpec, "logging", `set logging to stdout ("stdout") or a file ("file:[path],[max-size],[max-backups],[max-age]")`)
 
@@ -232,6 +283,29 @@ func ParseArgs(args []string) *AppConf {
 		os.Exit(0)
 	}
 
+	hashKeyBytes := []byte(*hashKey)
+	if len(hashKeyBytes) == 0 {
+		hashKeyBytes = []byte("我是用于数据签名的哈希串，开头的六十四个字节起作用！")[0:64]
+	}
+	if len(hashKeyBytes) != 64 {
+		panic(fmt.Sprintf("invalid hash key, byte length (%v) is not 64!", len(hashKeyBytes)))
+	}
+	blockKeyBytes := []byte(*blockKey)
+	if len(blockKeyBytes) == 0 {
+		blockKeyBytes = []byte("！串希哈的密解密加据数于用是我")[0:32]
+	}
+	if len(blockKeyBytes) != 32 {
+		panic(fmt.Sprintf("invalid block key, byte length (%v) is not 32!", len(blockKeyBytes)))
+	}
+	if *authExp < 0 || *authExp > 86400 {
+		panic(fmt.Sprintf("auth expiration %v (seconds) in not in allowed range [0, 86400]", *authExp))
+	}
+	scookie := securecookie.New(hashKeyBytes, blockKeyBytes)
+	scookie.SetSerializer(securecookie.JSONEncoder{})
+	scookie.MinAge(0)    // no restriction
+	scookie.MaxLength(0) // no restriction
+	scookie.MaxAge(*authExp)
+
 	// validate given args
 	if err := checkIPAndPort(*serverIP, *serverPort); err != nil {
 		panic(err.Error())
@@ -240,14 +314,27 @@ func ParseArgs(args []string) *AppConf {
 	if err != nil {
 		panic(err.Error())
 	}
+	if *serverReadTimeout < 5 || *serverReadTimeout > 300 {
+		panic(fmt.Sprintf("server read timeout (%v seconds) is not in allowed range [5, 300].", *serverReadTimeout))
+	}
+	if *serverWriteTimeout < 5 || *serverWriteTimeout > 300 {
+		panic(fmt.Sprintf("server read timeout (%v seconds) is not in allowed range [5, 300].", *serverWriteTimeout))
+	}
 
 	return &AppConf{
-		ServerIP:    *serverIP,
-		ServerPort:  *serverPort,
-		ESHosts:     esHosts,
-		LoggingSpec: loggingSpec,
+		ServerIP:           *serverIP,
+		ServerPort:         *serverPort,
+		ServerReadTimeout:  time.Duration(*serverReadTimeout) * time.Second,
+		ServerWriteTimeout: time.Duration(*serverWriteTimeout) * time.Second,
+		ESHosts:            esHosts,
+		LoggingSpec:        loggingSpec,
+
+		SCookie: scookie,
 
 		ArticleIndex:      &ESIndex{"article", articleIndexDef},
 		ArticleIndexTypes: articleIndexTypes,
+
+		UserIndex:      &ESIndex{"user", userIndexDef},
+		UserIndexTypes: userIndexTypes,
 	}
 }

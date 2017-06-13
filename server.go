@@ -167,7 +167,7 @@ func logRequest(w *ResponseWriter, r *http.Request) {
 
 type EndpointHandler func(*AppRuntime, http.ResponseWriter, *http.Request) *HttpResponseData
 
-func createHandlerFunc(app *AppRuntime, method string, h EndpointHandler) http.Handler {
+func handler(app *AppRuntime, method string, h EndpointHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ww, wr := wrapRequestAndResponse(w, r, app)
 		var d *HttpResponseData
@@ -187,30 +187,61 @@ func createHandlerFunc(app *AppRuntime, method string, h EndpointHandler) http.H
 	})
 }
 
-func registerHandlers(app *AppRuntime) {
-
-	// keepalive
-	http.Handle("/keepalive", createHandlerFunc(app, http.MethodGet, Keepalive))
-
-	// article endpoints
-	http.Handle("/article/create", createHandlerFunc(app, http.MethodGet, ArticleCreate(app)))
-	http.Handle("/article/edit", createHandlerFunc(app, http.MethodGet, ArticleEdit(app)))
-	http.Handle("/article/save", createHandlerFunc(app, http.MethodPost, ArticleSave(app)))
-	http.Handle("/article/submit", createHandlerFunc(app, http.MethodPost, ArticleSubmit(app)))
-	http.Handle("/article/discard", createHandlerFunc(app, http.MethodGet, ArticleDiscard(app)))
-	http.Handle("/article/publish", createHandlerFunc(app, http.MethodGet, ArticlePublish(app)))
-	http.Handle("/article/unpublish", createHandlerFunc(app, http.MethodGet, ArticleUnpublish(app)))
+func authHandler(h EndpointHandler) EndpointHandler {
+	return func(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+		msg := ""
+		if token := r.Header.Get(HeaderAuthToken); len(token) > 0 {
+			var user User
+			if err := app.Conf.SCookie.Decode(TokenCookieName, token, &user); err == nil {
+				r = r.WithContext(context.WithValue(r.Context(), CtxKeyUser, &user))
+				return h(app, w, r)
+			} else {
+				msg = fmt.Sprintf(`You are not authorized to access this resource! Reason: %v`, err)
+			}
+		} else {
+			msg = `You are not authorized to access this resource!`
+		}
+		return CreateForbiddenRespData(msg)
+	}
 }
 
-func StartAPIServer(app *AppRuntime) error {
+func registerHandlers(app *AppRuntime) *http.ServeMux {
+
+	mux := http.NewServeMux()
+
+	// keepalive
+	mux.Handle("/keepalive", handler(app, http.MethodGet, Keepalive))
+
+	// login
+	mux.Handle("/login", handler(app, http.MethodGet, Login))
+
+	// article endpoints
+	mux.Handle("/article/create", handler(app, http.MethodGet, authHandler(ArticleCreate(app))))
+	mux.Handle("/article/edit", handler(app, http.MethodGet, authHandler(ArticleEdit(app))))
+	mux.Handle("/article/save", handler(app, http.MethodPost, authHandler(ArticleSave(app))))
+	mux.Handle("/article/submit", handler(app, http.MethodPost, authHandler(ArticleSubmit(app))))
+	mux.Handle("/article/discard", handler(app, http.MethodGet, authHandler(ArticleDiscard(app))))
+	mux.Handle("/article/publish", handler(app, http.MethodGet, authHandler(ArticlePublish(app))))
+	mux.Handle("/article/unpublish", handler(app, http.MethodGet, authHandler(ArticleUnpublish(app))))
+
+	return mux
+}
+
+func StartAPIServer(app *AppRuntime) {
 	conf := app.Conf
 	logger := app.Logger
 
-	// register routes and handlers
-	registerHandlers(app)
+	addr := fmt.Sprintf("%v:%v", conf.ServerIP, conf.ServerPort)
+	srv := &http.Server{
+		Handler:      registerHandlers(app),
+		Addr:         addr,
+		ReadTimeout:  app.Conf.ServerReadTimeout,
+		WriteTimeout: app.Conf.ServerWriteTimeout,
+	}
 
 	// start server
-	address := fmt.Sprintf("%v:%v", conf.ServerIP, conf.ServerPort)
-	logger.Pinfof("starting api server on %v", address)
-	return http.ListenAndServe(address, nil)
+	logger.Pinfof("starting api server on %v", addr)
+	if err := srv.ListenAndServe(); err != nil {
+		panic(err)
+	}
 }

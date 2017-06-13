@@ -185,7 +185,7 @@ func parseArticleId(id string) (string, int64, error) {
 	}
 }
 
-func addAuditLogFields(app *AppRuntime, action string, h EndpointHandler) EndpointHandler {
+func addAuditLogFields(action string, h EndpointHandler) EndpointHandler {
 	return func(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
 		d := h(app, w, r)
 		id := StringFromReq(r, CtxKeyId)
@@ -197,7 +197,7 @@ func addAuditLogFields(app *AppRuntime, action string, h EndpointHandler) Endpoi
 		fields := make(map[string]interface{})
 		fields["audit"] = "article"
 		fields["action"] = action
-		fields["user"] = StringFromReq(r, CtxKeyUser)
+		fields["user"] = AuthFromReq(r).Username
 		if id != "" {
 			guid, ver, err := parseArticleId(id)
 			if err == nil {
@@ -215,7 +215,7 @@ func addAuditLogFields(app *AppRuntime, action string, h EndpointHandler) Endpoi
 }
 
 func createArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
-	username := StringFromReq(r, CtxKeyUser)
+	username := AuthFromReq(r).Username
 	article := &Article{
 		LockedBy:    username,
 		FromVersion: int64(0),
@@ -260,7 +260,7 @@ func saveArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 		return CreateInternalServerErrorRespData(body)
 	}
 	id := StringFromReq(r, CtxKeyId)
-	username := StringFromReq(r, CtxKeyUser)
+	username := AuthFromReq(r).Username
 	script := elastic.NewScript(ESScriptSaveArticle)
 	script.Type("inline").Lang("painless").Params(map[string]interface{}{
 		"checkuser":  true,
@@ -320,7 +320,7 @@ func submitArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Htt
 		return CreateInternalServerErrorRespData(body)
 	}
 	guid := StringFromReq(r, CtxKeyId)
-	username := StringFromReq(r, CtxKeyUser)
+	username := AuthFromReq(r).Username
 	ts := time.Now().UTC()
 	jt := &JSONTime{ts}
 	script := elastic.NewScript(ESScriptSaveArticle)
@@ -436,7 +436,7 @@ func editArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 		return d
 	}
 	// set article props
-	user := StringFromReq(r, CtxKeyUser)
+	user := AuthFromReq(r).Username
 	article.FromVersion = article.Version
 	article.Version = 0
 	article.RevisedAt = nil
@@ -538,42 +538,35 @@ func unpublishArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *
 }
 
 func ArticleCreate(app *AppRuntime) EndpointHandler {
-	h := addAuditLogFields(app, "create", createArticle)
-	return GetRequiredStringArg(app, "user", CtxKeyUser, h)
+	return addAuditLogFields("create", createArticle)
 }
 
 func ArticleSave(app *AppRuntime) EndpointHandler {
-	h := addAuditLogFields(app, "save", saveArticle)
-	h = GetRequiredStringArg(app, "id", CtxKeyId, h)
-	return GetRequiredStringArg(app, "user", CtxKeyUser, h)
+	h := addAuditLogFields("save", saveArticle)
+	return GetRequiredStringArg("id", CtxKeyId, h)
 }
 
 func ArticleSubmit(app *AppRuntime) EndpointHandler {
-	h := addAuditLogFields(app, "submit", submitArticle)
-	h = GetRequiredStringArg(app, "user", CtxKeyUser, h)
-	return GetRequiredStringArg(app, "id", CtxKeyId, h)
+	h := addAuditLogFields("submit", submitArticle)
+	return GetRequiredStringArg("id", CtxKeyId, h)
 }
 
 func ArticleDiscard(app *AppRuntime) EndpointHandler {
-	h := addAuditLogFields(app, "discard", discardArticle)
-	h = GetRequiredStringArg(app, "user", CtxKeyUser, h)
-	return GetRequiredStringArg(app, "id", CtxKeyId, h)
+	h := addAuditLogFields("discard", discardArticle)
+	return GetRequiredStringArg("id", CtxKeyId, h)
 }
 
 func ArticleEdit(app *AppRuntime) EndpointHandler {
-	h := addAuditLogFields(app, "edit", editArticle)
-	h = GetRequiredStringArg(app, "user", CtxKeyUser, h)
-	return GetRequiredStringArg(app, "id", CtxKeyId, h)
+	h := addAuditLogFields("edit", editArticle)
+	return GetRequiredStringArg("id", CtxKeyId, h)
 }
 
 func ArticlePublish(app *AppRuntime) EndpointHandler {
-	h := addAuditLogFields(app, "publish", publishArticle)
-	h = GetRequiredStringArg(app, "user", CtxKeyUser, h)
-	return GetRequiredStringArg(app, "id", CtxKeyId, h)
+	h := addAuditLogFields("publish", publishArticle)
+	return GetRequiredStringArg("id", CtxKeyId, h)
 }
 
 func ArticleUnpublish(app *AppRuntime) EndpointHandler {
-	h := addAuditLogFields(app, "unpublish", unpublishArticle)
-	h = GetRequiredStringArg(app, "user", CtxKeyUser, h)
-	return GetRequiredStringArg(app, "id", CtxKeyId, h)
+	h := addAuditLogFields("unpublish", unpublishArticle)
+	return GetRequiredStringArg("id", CtxKeyId, h)
 }
