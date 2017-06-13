@@ -24,7 +24,7 @@ func main() {
 	logger.SetFields(LogFields{
 		"log_group": "app",
 	})
-	logger.Pinfof("starting %v with conf: %v", conf.AppId, conf.String())
+	logger.Pinfof("starting with conf: %v", conf.String())
 
 	// init elasticsearch client
 	elastic, err := NewElastic(conf.ESHosts)
