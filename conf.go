@@ -44,7 +44,7 @@ var (
     "user":{
       "properties":{
         "username":        {"type": "keyword"},
-        "password":        {"type": "keyword", "index": false, "doc_values": false},
+        "password":        {"type": "binary"},
         "role":            {"type": "keyword"}
       }
     }

@@ -16,10 +16,10 @@ import (
 type CtxKey string
 
 const (
-	CtxKeyLogger CtxKey = "logger"
-	CtxKeyUser          = "user"
-	CtxKeyId            = "id"
-	CtxKeyVer           = "ver"
+	CtxKeyLogger  CtxKey = "logger"
+	CtxKeyCmsUser        = "cms-user"
+	CtxKeyId             = "id"
+	CtxKeyVer            = "ver"
 )
 
 func WithCtxStringValue(ctx context.Context, key CtxKey, val string) context.Context {
@@ -123,6 +123,19 @@ func wrapRequestAndResponse(w http.ResponseWriter, r *http.Request, app *AppRunt
 	return ww, wr
 }
 
+func IPFromRequestRemoteAddr(addr string) string {
+	if len(addr) > 0 {
+		ip, _, err := net.SplitHostPort(addr)
+		if err == nil {
+			userIP := net.ParseIP(ip)
+			if userIP != nil {
+				return userIP.String()
+			}
+		}
+	}
+	return ""
+}
+
 func logRequest(w *ResponseWriter, r *http.Request) {
 	processDuration := time.Now().UTC().Sub(w.requestTime)
 	/*
@@ -137,15 +150,7 @@ func logRequest(w *ResponseWriter, r *http.Request) {
 	}
 	clientIp := r.Header.Get("X-Forwarded-For")
 	if clientIp == "" {
-		if r.RemoteAddr != "" {
-			ip, _, err := net.SplitHostPort(r.RemoteAddr)
-			if err == nil {
-				userIP := net.ParseIP(ip)
-				if userIP != nil {
-					clientIp = userIP.String()
-				}
-			}
-		}
+		clientIp = IPFromRequestRemoteAddr(r.RemoteAddr)
 	}
 	if clientIp == "" {
 		clientIp = "-"
@@ -187,24 +192,6 @@ func handler(app *AppRuntime, method string, h EndpointHandler) http.Handler {
 	})
 }
 
-func authHandler(h EndpointHandler) EndpointHandler {
-	return func(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
-		msg := ""
-		if token := r.Header.Get(HeaderAuthToken); len(token) > 0 {
-			var user User
-			if err := app.Conf.SCookie.Decode(TokenCookieName, token, &user); err == nil {
-				r = r.WithContext(context.WithValue(r.Context(), CtxKeyUser, &user))
-				return h(app, w, r)
-			} else {
-				msg = fmt.Sprintf(`You are not authorized to access this resource! Reason: %v`, err)
-			}
-		} else {
-			msg = `You are not authorized to access this resource!`
-		}
-		return CreateForbiddenRespData(msg)
-	}
-}
-
 func registerHandlers(app *AppRuntime) *http.ServeMux {
 
 	mux := http.NewServeMux()
@@ -214,15 +201,16 @@ func registerHandlers(app *AppRuntime) *http.ServeMux {
 
 	// login
 	mux.Handle("/login", handler(app, http.MethodGet, Login))
+	mux.Handle("/login/create", handler(app, http.MethodGet, LocalAccessOnly(CreateLogin)))
 
 	// article endpoints
-	mux.Handle("/article/create", handler(app, http.MethodGet, authHandler(ArticleCreate(app))))
-	mux.Handle("/article/edit", handler(app, http.MethodGet, authHandler(ArticleEdit(app))))
-	mux.Handle("/article/save", handler(app, http.MethodPost, authHandler(ArticleSave(app))))
-	mux.Handle("/article/submit", handler(app, http.MethodPost, authHandler(ArticleSubmit(app))))
-	mux.Handle("/article/discard", handler(app, http.MethodGet, authHandler(ArticleDiscard(app))))
-	mux.Handle("/article/publish", handler(app, http.MethodGet, authHandler(ArticlePublish(app))))
-	mux.Handle("/article/unpublish", handler(app, http.MethodGet, authHandler(ArticleUnpublish(app))))
+	mux.Handle("/article/create", handler(app, http.MethodGet, AuthHandler(ArticleCreate())))
+	mux.Handle("/article/edit", handler(app, http.MethodGet, AuthHandler(ArticleEdit())))
+	mux.Handle("/article/save", handler(app, http.MethodPost, AuthHandler(ArticleSave())))
+	mux.Handle("/article/submit", handler(app, http.MethodPost, AuthHandler(ArticleSubmit())))
+	mux.Handle("/article/discard", handler(app, http.MethodGet, AuthHandler(ArticleDiscard())))
+	mux.Handle("/article/publish", handler(app, http.MethodGet, AuthHandler(ArticlePublish())))
+	mux.Handle("/article/unpublish", handler(app, http.MethodGet, AuthHandler(ArticleUnpublish())))
 
 	return mux
 }

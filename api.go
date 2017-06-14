@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -29,6 +30,36 @@ func GetRequiredStringArg(argName string, ctxKey CtxKey, h EndpointHandler) Endp
 			return d
 		} else {
 			r = r.WithContext(WithCtxStringValue(r.Context(), ctxKey, val))
+			return h(app, w, r)
+		}
+	}
+}
+
+func AuthHandler(h EndpointHandler) EndpointHandler {
+	return func(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+		msg := ""
+		if token := r.Header.Get(HeaderAuthToken); len(token) > 0 {
+			var user CmsUser
+			if err := app.Conf.SCookie.Decode(TokenCookieName, token, &user); err == nil {
+				r = r.WithContext(context.WithValue(r.Context(), CtxKeyCmsUser, &user))
+				return h(app, w, r)
+			} else {
+				msg = fmt.Sprintf(`You are not authorized to access this resource! Reason: %v`, err)
+			}
+		} else {
+			msg = `You are not authorized to access this resource!`
+		}
+		return CreateForbiddenRespData(msg)
+	}
+}
+
+func LocalAccessOnly(h EndpointHandler) EndpointHandler {
+	return func(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+		remoteIP := IPFromRequestRemoteAddr(r.RemoteAddr)
+		//fmt.Println(remoteIP)
+		if remoteIP != "localhost" && remoteIP != "127.0.0.1" && remoteIP != "::1" {
+			return CreateForbiddenRespData("local access only!")
+		} else {
 			return h(app, w, r)
 		}
 	}

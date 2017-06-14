@@ -197,7 +197,7 @@ func addAuditLogFields(action string, h EndpointHandler) EndpointHandler {
 		fields := make(map[string]interface{})
 		fields["audit"] = "article"
 		fields["action"] = action
-		fields["user"] = AuthFromReq(r).Username
+		fields["user"] = CmsUserFromReq(r).Username
 		if id != "" {
 			guid, ver, err := parseArticleId(id)
 			if err == nil {
@@ -215,7 +215,7 @@ func addAuditLogFields(action string, h EndpointHandler) EndpointHandler {
 }
 
 func createArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
-	username := AuthFromReq(r).Username
+	username := CmsUserFromReq(r).Username
 	article := &Article{
 		LockedBy:    username,
 		FromVersion: int64(0),
@@ -235,7 +235,7 @@ func createArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Htt
 		article.CreatedBy = username
 		article.LockedBy = username
 		if bytes, err := json.Marshal(article); err == nil {
-			d := CreateRespData(http.StatusOK, ContentTypeValueJSON, string(bytes))
+			d := CreateRespData(http.StatusCreated, ContentTypeValueJSON, string(bytes))
 			// save article so that we can log auto-generated article-id
 			// with context-logger
 			d.Data = article
@@ -260,7 +260,7 @@ func saveArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 		return CreateInternalServerErrorRespData(body)
 	}
 	id := StringFromReq(r, CtxKeyId)
-	username := AuthFromReq(r).Username
+	username := CmsUserFromReq(r).Username
 	script := elastic.NewScript(ESScriptSaveArticle)
 	script.Type("inline").Lang("painless").Params(map[string]interface{}{
 		"checkuser":  true,
@@ -320,7 +320,7 @@ func submitArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Htt
 		return CreateInternalServerErrorRespData(body)
 	}
 	guid := StringFromReq(r, CtxKeyId)
-	username := AuthFromReq(r).Username
+	username := CmsUserFromReq(r).Username
 	ts := time.Now().UTC()
 	jt := &JSONTime{ts}
 	script := elastic.NewScript(ESScriptSaveArticle)
@@ -436,7 +436,7 @@ func editArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 		return d
 	}
 	// set article props
-	user := AuthFromReq(r).Username
+	user := CmsUserFromReq(r).Username
 	article.FromVersion = article.Version
 	article.Version = 0
 	article.RevisedAt = nil
@@ -456,7 +456,7 @@ func editArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 	defer lock.Unlock()
 	resp, err := idxService.Do(ctx)
 	if err != nil {
-		body := fmt.Sprintf("error querying elasticsearch, error: %v", err)
+		body := fmt.Sprintf("error indexing doc, error: %v", err)
 		return CreateInternalServerErrorRespData(body)
 	} else if !resp.Created {
 		// same doc already there? try to load it
@@ -537,36 +537,36 @@ func unpublishArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *
 	}
 }
 
-func ArticleCreate(app *AppRuntime) EndpointHandler {
+func ArticleCreate() EndpointHandler {
 	return addAuditLogFields("create", createArticle)
 }
 
-func ArticleSave(app *AppRuntime) EndpointHandler {
+func ArticleSave() EndpointHandler {
 	h := addAuditLogFields("save", saveArticle)
 	return GetRequiredStringArg("id", CtxKeyId, h)
 }
 
-func ArticleSubmit(app *AppRuntime) EndpointHandler {
+func ArticleSubmit() EndpointHandler {
 	h := addAuditLogFields("submit", submitArticle)
 	return GetRequiredStringArg("id", CtxKeyId, h)
 }
 
-func ArticleDiscard(app *AppRuntime) EndpointHandler {
+func ArticleDiscard() EndpointHandler {
 	h := addAuditLogFields("discard", discardArticle)
 	return GetRequiredStringArg("id", CtxKeyId, h)
 }
 
-func ArticleEdit(app *AppRuntime) EndpointHandler {
+func ArticleEdit() EndpointHandler {
 	h := addAuditLogFields("edit", editArticle)
 	return GetRequiredStringArg("id", CtxKeyId, h)
 }
 
-func ArticlePublish(app *AppRuntime) EndpointHandler {
+func ArticlePublish() EndpointHandler {
 	h := addAuditLogFields("publish", publishArticle)
 	return GetRequiredStringArg("id", CtxKeyId, h)
 }
 
-func ArticleUnpublish(app *AppRuntime) EndpointHandler {
+func ArticleUnpublish() EndpointHandler {
 	h := addAuditLogFields("unpublish", unpublishArticle)
 	return GetRequiredStringArg("id", CtxKeyId, h)
 }
