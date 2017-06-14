@@ -19,46 +19,46 @@ type AuthToken struct {
 	Token string `json:"token"`
 }
 
-type CmsUserRole uint64
+type CmsRole uint64
 
 const (
 
-	// can create article
+	// create article
 	// implies save/submit/discard draft article created by self
-	CmsUserRoleCreate CmsUserRole = 1 << 0
+	CmsRoleArticleCreate CmsRole = 1 << 0
 
-	// can edit article
+	// edit article
 	// implies save/submit/discard draft article created by self
-	CmsUserRoleEdit CmsUserRole = 1 << 1
+	CmsRoleArticleEdit CmsRole = 1 << 1
 
-	// can submit/discard draft article created by others
-	CmsUserRoleDraftCleaner CmsUserRole = 1 << 2
+	// submit/discard draft article created by others
+	CmsRoleArticleDraftCleaner CmsRole = 1 << 2
 
-	// cat publish/unpublish article
-	CmsUserRolePublish CmsUserRole = 1 << 3
+	// publish/unpublish article
+	CmsRoleArticlePublish CmsRole = 1 << 3
 )
 
 var (
-	CmsUserRoleId2Name map[CmsUserRole]string
-	CmsUserRoleName2Id map[string]CmsUserRole
+	CmsRoleId2Name map[CmsRole]string
+	CmsRoleName2Id map[string]CmsRole
 )
 
 func init() {
-	CmsUserRoleId2Name = map[CmsUserRole]string{
-		CmsUserRoleCreate:       "create",
-		CmsUserRoleEdit:         "edit",
-		CmsUserRoleDraftCleaner: "draft-cleaner",
-		CmsUserRolePublish:      "publish",
+	CmsRoleId2Name = map[CmsRole]string{
+		CmsRoleArticleCreate:       "create",
+		CmsRoleArticleEdit:         "edit",
+		CmsRoleArticleDraftCleaner: "draft-cleaner",
+		CmsRoleArticlePublish:      "publish",
 	}
-	CmsUserRoleName2Id = make(map[string]CmsUserRole)
-	for id, name := range CmsUserRoleId2Name {
-		CmsUserRoleName2Id[name] = id
+	CmsRoleName2Id = make(map[string]CmsRole)
+	for id, name := range CmsRoleId2Name {
+		CmsRoleName2Id[name] = id
 	}
 }
 
-func (r CmsUserRole) MarshalJSON() ([]byte, error) {
+func (r CmsRole) MarshalJSON() ([]byte, error) {
 	roles := make([]string, 0)
-	for id, name := range CmsUserRoleId2Name {
+	for id, name := range CmsRoleId2Name {
 		if r&id == id {
 			roles = append(roles, name)
 		}
@@ -66,14 +66,14 @@ func (r CmsUserRole) MarshalJSON() ([]byte, error) {
 	return json.Marshal(roles)
 }
 
-func (r CmsUserRole) UnmarshalJSON(data []byte) error {
+func (r CmsRole) UnmarshalJSON(data []byte) error {
 	roles := make([]string, 0)
 	if err := json.Unmarshal(data, &roles); err != nil {
 		return err
 	}
 	if roles != nil && len(roles) > 0 {
 		for _, name := range roles {
-			if id, ok := CmsUserRoleName2Id[name]; ok {
+			if id, ok := CmsRoleName2Id[name]; ok {
 				r = r | id
 			} else {
 				fmt.Fprintf(os.Stderr, "ignore unknown cms user role name %v!", name)
@@ -84,9 +84,9 @@ func (r CmsUserRole) UnmarshalJSON(data []byte) error {
 }
 
 type CmsUser struct {
-	Username string      `json:"username,omitempty"`
-	Password string      `json:"password,omitempty"`
-	Role     CmsUserRole `json:"role,omitempty"`
+	Username string  `json:"username,omitempty"`
+	Password string  `json:"password,omitempty"`
+	Role     CmsRole `json:"role,omitempty"`
 }
 
 func CmsUserFromReq(req *http.Request) *CmsUser {
@@ -159,6 +159,7 @@ func Login(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpRespons
 		//fmt.Println(err)
 		return CreateForbiddenRespData("wrong password!")
 	}
+	user.Password = ""
 	if token, err := app.Conf.SCookie.Encode(TokenCookieName, user); err == nil {
 		return CreateJsonRespData(http.StatusOK, &AuthToken{token})
 	} else {
@@ -180,10 +181,10 @@ func CreateLogin(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 	if d != nil {
 		return d
 	}
-	var role CmsUserRole = 0
+	var role CmsRole = 0
 	if len(roleStr) > 0 {
 		for _, roleName := range strings.Split(roleStr, ",") {
-			if id, ok := CmsUserRoleName2Id[roleName]; ok {
+			if id, ok := CmsRoleName2Id[roleName]; ok {
 				role = role | id
 			} else {
 				CtxLoggerFromReq(r).Pwarnf("ignore unknown cms user role name %v!", roleName)
@@ -219,6 +220,6 @@ func CreateLogin(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 	} else if !resp.Created {
 		return CreateInternalServerErrorRespData("unknown error!")
 	} else {
-		return CreateRespData(http.StatusCreated, ContentTypeValueText, "")
+		return CreateRespData(http.StatusOK, ContentTypeValueText, "")
 	}
 }

@@ -235,7 +235,7 @@ func createArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Htt
 		article.CreatedBy = username
 		article.LockedBy = username
 		if bytes, err := json.Marshal(article); err == nil {
-			d := CreateRespData(http.StatusCreated, ContentTypeValueJSON, string(bytes))
+			d := CreateRespData(http.StatusOK, ContentTypeValueJSON, string(bytes))
 			// save article so that we can log auto-generated article-id
 			// with context-logger
 			d.Data = article
