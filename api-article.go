@@ -1,11 +1,13 @@
 /*
-   /article/create     GET   [draft (create)]                           no lock
-   /article/edit       GET   [version (read) --> draft (create)]        lock on draft
-   /article/save       POST  [draft (update)]                           lock on draft
-   /article/submit     POST  [draft (save/delete) --> version (create)] lock on draft
-   /article/discard    GET   [draft (delete)]                           lock on draft
-   /article/publish    GET   [version (read) --> publish (upsert)]      lock on publish
-   /article/unpublish  GET   [publish (delete)]                         lock on publish
+   /article/create        GET   [draft (create)]                                        no lock
+   /article/edit          GET   [version (read) --> draft (create)]                     lock on draft
+   /article/save          POST  [draft (update)]                                        lock on draft
+   /article/submit-self   POST  [draft (save) --> version (create) --> draft (delete)]  lock on draft
+   /article/submit-other  GET   [draft (read) --> version (create) --> draft (delete)]  lock on draft
+   /article/discard-self  GET   [draft (delete)]                                        lock on draft
+   /article/discard-other GET   [draft (delete)]                                        lock on draft
+   /article/publish       GET   [version (read) --> publish (upsert)]                   lock on publish
+   /article/unpublish     GET   [publish (delete)]                                      lock on publish
 */
 
 package main
@@ -26,7 +28,7 @@ import (
 
 const (
 	ESScriptSaveArticle = `
-if (params.checkuser && ctx._source.locked_by != params.username) {
+if (ctx._source.locked_by != params.username) {
   ctx.op = "none"
 } else {
   ctx._source.headline = params.headline;
@@ -34,7 +36,16 @@ if (params.checkuser && ctx._source.locked_by != params.username) {
   ctx._source.content = params.content;
   ctx._source.tag = params.tag;
   ctx._source.note = params.note;
+  ctx._source.revised_at = params.revised_at;
 }`
+
+	ESScriptDiscardArticle = `
+if (ctx._source.locked_by != params.username) {
+  ctx.op = "none"
+} else {
+  ctx.op = "delete"
+}
+`
 )
 
 var (
@@ -106,7 +117,8 @@ func unmarshalArticle(data []byte) (*Article, error) {
 func getFullArticle(
 	client *elastic.Client,
 	ctx context.Context,
-	index, typ, id string) (*Article, *HttpResponseData) {
+	index, typ, id string,
+	logger *JsonLogger) (*Article, *HttpResponseData) {
 	source := elastic.NewFetchSourceContext(true).Include(
 		"guid",
 		"headline",
@@ -122,14 +134,15 @@ func getFullArticle(
 		"note",
 		"locked_by",
 	)
-	return getArticle(client, ctx, index, typ, id, source)
+	return getArticle(client, ctx, index, typ, id, source, logger)
 }
 
 func getArticle(
 	client *elastic.Client,
 	ctx context.Context,
 	index, typ, id string,
-	source *elastic.FetchSourceContext) (*Article, *HttpResponseData) {
+	source *elastic.FetchSourceContext,
+	logger *JsonLogger) (*Article, *HttpResponseData) {
 	getService := client.Get()
 	getService.Index(index)
 	getService.Type(typ)
@@ -140,18 +153,22 @@ func getArticle(
 	if err != nil {
 		if elastic.IsNotFound(err) {
 			body := fmt.Sprintf("article %v not found in index %v type %v!", id, index, typ)
+			logger.Perror(body)
 			return nil, CreateNotFoundRespData(body)
 		} else {
 			body := fmt.Sprintf("failed to query elasticsearch, error: %v", err)
+			logger.Perror(body)
 			return nil, CreateInternalServerErrorRespData(body)
 		}
 	} else if !resp.Found {
 		body := fmt.Sprintf("article %v not found in index %v type %v!", id, index, typ)
+		logger.Perror(body)
 		return nil, CreateNotFoundRespData(body)
 	} else {
 		article := &Article{}
 		if err := json.Unmarshal(*resp.Source, article); err != nil {
-			body := fmt.Sprintf("unmarshal article error: %v", err)
+			body := fmt.Sprintf("unmarshal article %v error: %v", id, err)
+			logger.Perror(body)
 			return nil, CreateInternalServerErrorRespData(body)
 		} else {
 			article.Id = resp.Id
@@ -160,7 +177,7 @@ func getArticle(
 	}
 }
 
-func marshalArticle(a *Article, status int) *HttpResponseData {
+/*func marshalArticle(a *Article, status int) *HttpResponseData {
 	bytes, err := json.Marshal(a)
 	if err != nil {
 		body := fmt.Sprintf("error marshaling article: %v", err)
@@ -168,7 +185,7 @@ func marshalArticle(a *Article, status int) *HttpResponseData {
 	} else {
 		return CreateRespData(status, ContentTypeValueJSON, string(bytes))
 	}
-}
+}*/
 
 func parseArticleId(id string) (string, int64, error) {
 	idx := strings.LastIndex(id, ":")
@@ -215,10 +232,11 @@ func addAuditLogFields(action string, h EndpointHandler) EndpointHandler {
 }
 
 func createArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	logger := CtxLoggerFromReq(r)
 	username := CmsUserFromReq(r).Username
 	article := &Article{
 		LockedBy:    username,
-		FromVersion: int64(0),
+		FromVersion: 0,
 	}
 	// don't set Id or OpType in order to have id auto-generated by elasticsearch
 	idxService := app.Elastic.Client.Index()
@@ -227,7 +245,8 @@ func createArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Htt
 	idxService.BodyJson(article)
 	resp, err := idxService.Do(context.Background())
 	if err != nil {
-		body := fmt.Sprintf("error creating new doc: %v", err)
+		body := fmt.Sprintf("error creating new article doc: %v", err)
+		logger.Perror(body)
 		return CreateInternalServerErrorRespData(body)
 	} else {
 		article.Id = resp.Id
@@ -235,139 +254,143 @@ func createArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Htt
 		article.CreatedBy = username
 		article.LockedBy = username
 		if bytes, err := json.Marshal(article); err == nil {
-			d := CreateRespData(http.StatusOK, ContentTypeValueJSON, string(bytes))
+			d := CreateRespData(http.StatusOK, ContentTypeValueJSON, bytes)
 			// save article so that we can log auto-generated article-id
 			// with context-logger
 			d.Data = article
+			logger.Pinfof("user %v created article draft %v", username, article.Id)
 			return d
 		} else {
-			body := fmt.Sprintf("failed to marshal Article object, error: %v", err)
+			body := fmt.Sprintf("failed to marshal article %v, error: %v", article.Id, err)
+			logger.Perror(body)
 			return CreateInternalServerErrorRespData(body)
 		}
 	}
 }
 
-func saveArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
-	// don't allow save another user's edit/create
-	bytes, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		body := fmt.Sprintf("failed to read request body, error: %v", err)
-		return CreateInternalServerErrorRespData(body)
-	}
-	article, err := unmarshalArticle(bytes)
-	if err != nil {
-		body := fmt.Sprintf("failed to unmarshal article, error: %v", err)
-		return CreateInternalServerErrorRespData(body)
-	}
-	id := StringFromReq(r, CtxKeyId)
-	username := CmsUserFromReq(r).Username
+func saveArticleDraft(app *AppRuntime, user *CmsUser, article *Article, logger *JsonLogger) (*Article, *HttpResponseData) {
+	username := user.Username
 	script := elastic.NewScript(ESScriptSaveArticle)
+	article.RevisedAt = &JSONTime{time.Now().UTC()}
 	script.Type("inline").Lang("painless").Params(map[string]interface{}{
-		"checkuser":  true,
 		"headline":   article.Headline,
 		"summary":    article.Summary,
 		"content":    article.Content,
 		"tag":        article.Tag,
 		"note":       article.Note,
 		"username":   username,
-		"revised_at": &JSONTime{time.Now().UTC()},
+		"revised_at": article.RevisedAt,
 	})
 	updService := app.Elastic.Client.Update()
 	updService.Index(app.Conf.ArticleIndex.Name)
 	updService.Type(app.Conf.ArticleIndexTypes.Draft)
-	updService.Id(id)
+	updService.Id(article.Id)
 	updService.Script(script)
 	updService.DetectNoop(true)
-
-	lock := draftLock.Get(id)
-	lock.Lock()
-	defer lock.Unlock()
 	resp, err := updService.Do(context.Background())
 	//fmt.Printf("resp: %T, %+v\n", resp, resp)
 	//fmt.Printf("error: %v\n", err)
 	if err != nil {
 		if elastic.IsNotFound(err) {
-			body := fmt.Sprintf("article %v not found!", id)
-			return CreateNotFoundRespData(body)
+			body := fmt.Sprintf("article draft %v not found!", article.Id)
+			logger.Perror(body)
+			return nil, CreateNotFoundRespData(body)
 		} else {
-			body := fmt.Sprintf("failed to update article, error: %v", err)
-			return CreateInternalServerErrorRespData(body)
+			body := fmt.Sprintf("failed to update article draft %v, error: %v", article.Id, err)
+			logger.Perror(body)
+			return nil, CreateInternalServerErrorRespData(body)
 		}
 	} else {
 		if resp.Result == "noop" {
-			return CreateForbiddenRespData("Update article locked by another user is not allowed!")
+			body := fmt.Sprintf("Save article draft (%v) locked by another user is not allowed!", article.Id)
+			logger.Perror(body)
+			return nil, CreateForbiddenRespData(body)
 		} else if resp.Result == "updated" {
-			return CreateRespData(http.StatusOK, ContentTypeValueText, "")
+			logger.Pinfof("user %v saved article draft %v", username, article.Id)
+			return article, nil
 		} else {
 			body := fmt.Sprintf(`unknown "result" in update response: %v`, resp.Result)
-			return CreateInternalServerErrorRespData(body)
+			logger.Perror(body)
+			return nil, CreateInternalServerErrorRespData(body)
 		}
 	}
 }
 
-func submitArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
-	// first save the article to draft
-	// here we allow 'super' user to submit
-	// article created/edited by a different user
+func saveArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	logger := CtxLoggerFromReq(r)
 	bytes, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		body := fmt.Sprintf("failed to read request body, error: %v", err)
+		logger.Perror(body)
 		return CreateInternalServerErrorRespData(body)
 	}
 	article, err := unmarshalArticle(bytes)
 	if err != nil {
 		body := fmt.Sprintf("failed to unmarshal article, error: %v", err)
+		logger.Perror(body)
 		return CreateInternalServerErrorRespData(body)
 	}
-	guid := StringFromReq(r, CtxKeyId)
-	username := CmsUserFromReq(r).Username
-	ts := time.Now().UTC()
-	jt := &JSONTime{ts}
-	script := elastic.NewScript(ESScriptSaveArticle)
-	script.Type("inline").Lang("painless").Params(map[string]interface{}{
-		"checkuser":  false,
-		"headline":   article.Headline,
-		"summary":    article.Summary,
-		"content":    article.Content,
-		"tag":        article.Tag,
-		"note":       article.Note,
-		"username":   username,
-		"revised_at": jt,
-	})
-	client := app.Elastic.Client
-	updService := client.Update()
-	updService.Index(app.Conf.ArticleIndex.Name)
-	updService.Type(app.Conf.ArticleIndexTypes.Draft)
-	updService.Id(guid)
-	updService.Script(script)
-	updService.DetectNoop(false)
-	ctx := context.Background()
-
-	lock := draftLock.Get(guid)
+	article.Id = StringFromReq(r, CtxKeyId)
+	user := CmsUserFromReq(r)
+	// lock on the article draft
+	lock := draftLock.Get(article.Id)
 	lock.Lock()
 	defer lock.Unlock()
-	_, err = updService.Do(ctx)
+	// save article
+	article, d := saveArticleDraft(app, user, article, logger)
+	if d != nil {
+		return d
+	} else {
+		logger.Pinfof("user %v saved article draft %v", user.Username, article.Id)
+		return CreateRespData(http.StatusOK, ContentTypeValueText, []byte{})
+	}
+}
+
+func submitArticleSelf(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	logger := CtxLoggerFromReq(r)
+	// first save the article to draft
+	bytes, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		body := fmt.Sprintf("failed to save article draft %v, error: %v", guid, err)
+		body := fmt.Sprintf("failed to read request body, error: %v", err)
+		logger.Perror(body)
 		return CreateInternalServerErrorRespData(body)
 	}
+	article, err := unmarshalArticle(bytes)
+	if err != nil {
+		body := fmt.Sprintf("failed to unmarshal article, error: %v", err)
+		logger.Perror(body)
+		return CreateInternalServerErrorRespData(body)
+	}
+	article.Id = StringFromReq(r, CtxKeyId)
+	user := CmsUserFromReq(r)
+	// lock on the article draft
+	lock := draftLock.Get(article.Id)
+	lock.Lock()
+	defer lock.Unlock()
+	// save article draft
+	article, d := saveArticleDraft(app, user, article, logger)
+	if d != nil {
+		return d
+	}
 	// set article props for the new version
-	ver := ts.UnixNano()
-	verGuid := fmt.Sprintf("%v:%v", guid, ver)
+	jt := article.RevisedAt
+	ver := jt.T.UnixNano()
+	verGuid := fmt.Sprintf("%v:%v", article.Guid, ver)
 	article.Id = verGuid
 	article.Version = ver
 	if article.FromVersion == 0 { // it's a create
 		article.CreatedAt = jt
-		article.CreatedBy = username
+		article.CreatedBy = user.Username
 		article.RevisedAt = nil
 		article.RevisedBy = ""
 	} else { // it's an edit
 		article.RevisedAt = jt
-		article.RevisedBy = username
+		article.RevisedBy = user.Username
 	}
 	article.LockedBy = ""
 	// create the new version
-	idxService := client.Index()
+	ctx := context.Background()
+	idxService := app.Elastic.Client.Index()
 	idxService.Index(app.Conf.ArticleIndex.Name)
 	idxService.Type(app.Conf.ArticleIndexTypes.Version)
 	idxService.OpType(ESIndexOpCreate)
@@ -375,20 +398,24 @@ func submitArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Htt
 	idxService.BodyJson(article)
 	idxResp, err := idxService.Do(ctx)
 	if err != nil {
-		body := fmt.Sprintf("failed to create new article version, error: %v", err)
+		body := fmt.Sprintf("failed to create new article version %v, error: %v", verGuid, err)
+		logger.Perror(body)
 		return CreateInternalServerErrorRespData(body)
 	} else if !idxResp.Created {
-		body := "no reason but article new version is not created!"
+		body := fmt.Sprintf("no reason but article new version %v is not created!", verGuid)
+		logger.Perror(body)
 		return CreateInternalServerErrorRespData(body)
 	}
 	// delete article from draft
-	delService := client.Delete()
+	// no need to check user here as we have successfully saved it
+	delService := app.Elastic.Client.Delete()
 	delService.Index(app.Conf.ArticleIndex.Name)
 	delService.Type(app.Conf.ArticleIndexTypes.Draft)
 	delService.Id(article.Guid)
 	_, err = delService.Do(ctx)
 	if err != nil {
-		body := fmt.Sprintf("failed to delete article draft, error: %v", err)
+		body := fmt.Sprintf("failed to delete article draft %v, error: %v", article.Guid, err)
+		logger.Perror(body)
 		return CreateInternalServerErrorRespData(body)
 	}
 	// return article version
@@ -397,96 +424,217 @@ func submitArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Htt
 	article.Content = ""
 	article.Tag = nil
 	article.Note = ""
-	return marshalArticle(article, http.StatusOK)
+	if bytes, err := json.Marshal(article); err == nil {
+		logger.Pinfof("user %v submited article version %v", user.Username, verGuid)
+		return CreateRespData(http.StatusOK, ContentTypeValueJSON, bytes)
+	} else {
+		body := fmt.Sprintf("error marshaling article %v: %v", verGuid, err)
+		logger.Perror(body)
+		return CreateInternalServerErrorRespData(body)
+	}
 }
 
-func discardArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
-	id := StringFromReq(r, CtxKeyId)
-	delService := app.Elastic.Client.Delete()
-	delService.Index(app.Conf.ArticleIndex.Name)
-	delService.Type(app.Conf.ArticleIndexTypes.Draft)
-	delService.Id(id)
+func discardArticleSelf(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	logger := CtxLoggerFromReq(r)
+	articleId := StringFromReq(r, CtxKeyId)
+	username := CmsUserFromReq(r).Username
 
-	lock := draftLock.Get(id)
-	lock.Lock()
-	defer lock.Unlock()
-	_, err := delService.Do(context.Background())
+	script := elastic.NewScript(ESScriptSaveArticle)
+	script.Type("inline").Lang("painless").Params(map[string]interface{}{
+		"username": username,
+	})
+	updService := app.Elastic.Client.Update()
+	updService.Index(app.Conf.ArticleIndex.Name)
+	updService.Type(app.Conf.ArticleIndexTypes.Draft)
+	updService.Id(articleId)
+	updService.Script(script)
+	updService.DetectNoop(true)
+	resp, err := updService.Do(context.Background())
 	if err != nil {
 		if elastic.IsNotFound(err) {
-			body := fmt.Sprintf("article %v not found!", id)
+			body := fmt.Sprintf("article draft %v not found!", articleId)
+			logger.Perror(body)
 			return CreateNotFoundRespData(body)
 		} else {
-			body := fmt.Sprintf("failed to discard article, error: %v", err)
+			body := fmt.Sprintf("failed to delete article draft %v, error: %v", articleId, err)
+			logger.Perror(body)
 			return CreateInternalServerErrorRespData(body)
 		}
 	} else {
-		return CreateRespData(http.StatusOK, ContentTypeValueText, "")
+		if resp.Result == "noop" {
+			body := "delete article locked by another user is not allowed!"
+			logger.Perror(body)
+			return CreateForbiddenRespData(body)
+		} else if resp.Result == "updated" {
+			logger.Pinfof("user %v deleted article draft %v", username, articleId)
+			return CreateRespData(http.StatusOK, ContentTypeValueText, []byte{})
+		} else {
+			body := fmt.Sprintf(`unknown "result" in update response: %v`, resp.Result)
+			logger.Perror(body)
+			return CreateInternalServerErrorRespData(body)
+		}
+	}
+}
+
+func submitArticleOther(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	logger := CtxLoggerFromReq(r)
+	user := CmsUserFromReq(r)
+	// first get the draft article
+	articleId := StringFromReq(r, CtxKeyId)
+	client := app.Elastic.Client
+	index := app.Conf.ArticleIndex.Name
+	typ := app.Conf.ArticleIndexTypes.Draft
+	ctx := context.Background()
+	article, d := getFullArticle(client, ctx, index, typ, articleId, logger)
+	if d != nil {
+		return d
+	}
+	// lock on the article draft
+	lock := draftLock.Get(article.Id)
+	lock.Lock()
+	defer lock.Unlock()
+	// set article props for the new version
+	jt := article.RevisedAt
+	ver := jt.T.UnixNano()
+	verGuid := fmt.Sprintf("%v:%v", article.Guid, ver)
+	article.Id = verGuid
+	article.Version = ver
+	if article.FromVersion == 0 { // it's a create
+		article.CreatedAt = jt
+		article.CreatedBy = user.Username
+		article.RevisedAt = nil
+		article.RevisedBy = ""
+	} else { // it's an edit
+		article.RevisedAt = jt
+		article.RevisedBy = user.Username
+	}
+	article.LockedBy = ""
+	// create the new version
+	idxService := client.Index()
+	idxService.Index(index)
+	idxService.Type(app.Conf.ArticleIndexTypes.Version)
+	idxService.OpType(ESIndexOpCreate)
+	idxService.Id(article.Id)
+	idxService.BodyJson(article)
+	idxResp, err := idxService.Do(ctx)
+	if err != nil {
+		body := fmt.Sprintf("failed to create new article version %v, error: %v", verGuid, err)
+		logger.Perror(body)
+		return CreateInternalServerErrorRespData(body)
+	} else if !idxResp.Created {
+		body := fmt.Sprintf("no reason but article new version %v is not created!", verGuid)
+		logger.Perror(body)
+		return CreateInternalServerErrorRespData(body)
+	}
+	// delete article from draft
+	delService := app.Elastic.Client.Delete()
+	delService.Index(app.Conf.ArticleIndex.Name)
+	delService.Type(app.Conf.ArticleIndexTypes.Draft)
+	delService.Id(article.Guid)
+	_, err = delService.Do(ctx)
+	if err != nil {
+		body := fmt.Sprintf("failed to delete article draft %v, error: %v", article.Guid, err)
+		logger.Perror(body)
+		return CreateInternalServerErrorRespData(body)
+	}
+	// return article version
+	article.Headline = ""
+	article.Summary = ""
+	article.Content = ""
+	article.Tag = nil
+	article.Note = ""
+	if bytes, err := json.Marshal(article); err == nil {
+		logger.Pinfof("user %v submited article version %v", user.Username, verGuid)
+		return CreateRespData(http.StatusOK, ContentTypeValueJSON, bytes)
+	} else {
+		body := fmt.Sprintf("error marshaling article %v: %v", verGuid, err)
+		logger.Perror(body)
+		return CreateInternalServerErrorRespData(body)
+	}
+}
+
+func discardArticleOther(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	logger := CtxLoggerFromReq(r)
+	articleId := StringFromReq(r, CtxKeyId)
+	username := CmsUserFromReq(r).Username
+
+	delService := app.Elastic.Client.Delete()
+	delService.Index(app.Conf.ArticleIndex.Name)
+	delService.Type(app.Conf.ArticleIndexTypes.Draft)
+	delService.Id(articleId)
+	_, err := delService.Do(context.Background())
+	if err != nil {
+		body := fmt.Sprintf("failed to delete article draft %v, error: %v", articleId, err)
+		logger.Perror(body)
+		return CreateInternalServerErrorRespData(body)
+	} else {
+		logger.Pinfof("user %v deleted article draft %v", username, articleId)
+		return CreateRespData(http.StatusOK, ContentTypeValueText, []byte{})
 	}
 }
 
 func editArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	logger := CtxLoggerFromReq(r)
 	// first get the article from the version type
-	id := StringFromReq(r, CtxKeyId)
+	articleId := StringFromReq(r, CtxKeyId)
 	client := app.Elastic.Client
 	index := app.Conf.ArticleIndex.Name
 	typ := app.Conf.ArticleIndexTypes.Version
 	ctx := context.Background()
-	article, d := getFullArticle(client, ctx, index, typ, id)
+	article, d := getFullArticle(client, ctx, index, typ, articleId, logger)
 	if d != nil {
 		return d
 	}
 	// set article props
-	user := CmsUserFromReq(r).Username
+	jt := &JSONTime{time.Now().UTC()}
+	username := CmsUserFromReq(r).Username
+	article.Id = article.Guid
 	article.FromVersion = article.Version
 	article.Version = 0
-	article.RevisedAt = nil
-	article.RevisedBy = user
-	article.LockedBy = user
+	article.RevisedAt = jt
+	article.RevisedBy = username
+	article.LockedBy = username
 	// now try to index (create) it as type draft
-	typ = app.Conf.ArticleIndexTypes.Draft
 	idxService := client.Index()
 	idxService.Index(index)
-	idxService.Type(typ)
+	idxService.Type(app.Conf.ArticleIndexTypes.Draft)
 	idxService.OpType(ESIndexOpCreate)
-	idxService.Id(article.Guid)
+	idxService.Id(article.Id)
 	idxService.BodyJson(article)
 
-	lock := draftLock.Get(article.Guid)
+	lock := draftLock.Get(article.Id)
 	lock.Lock()
 	defer lock.Unlock()
 	resp, err := idxService.Do(ctx)
 	if err != nil {
-		body := fmt.Sprintf("error indexing doc, error: %v", err)
+		body := fmt.Sprintf("failed to create article draft %v, error: %v", article.Id, err)
+		logger.Perror(body)
 		return CreateInternalServerErrorRespData(body)
 	} else if !resp.Created {
-		// same doc already there? try to load it
-		source := elastic.NewFetchSourceContext(true).Include("guid", "version", "from_version", "locked_by")
-		article, d = getArticle(client, ctx, index, typ, article.Guid, source)
-		if d != nil {
-			// edge case: affending resource not found (404),
-			// return 409 so that caller could give it another try
-			if d.Status == http.StatusNotFound {
-				d = marshalArticle(&Article{
-					Guid: article.Guid,
-				}, http.StatusConflict)
-			}
-			return d
-		} else {
-			return marshalArticle(article, http.StatusConflict)
-		}
+		body := fmt.Sprintf("no reason but article draft %v is not created!", article.Id)
+		logger.Perror(body)
+		return CreateInternalServerErrorRespData(body)
 	} else {
-		return marshalArticle(article, http.StatusOK)
+		if bytes, err := json.Marshal(article); err == nil {
+			logger.Pinfof("user %v created article draft %v", username, article.Id)
+			return CreateRespData(http.StatusOK, ContentTypeValueJSON, bytes)
+		} else {
+			body := fmt.Sprintf("failed to marshal article draft %v, error: %v", article.Id, err)
+			logger.Perror(body)
+			return CreateInternalServerErrorRespData(body)
+		}
 	}
 }
 
 func publishArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	logger := CtxLoggerFromReq(r)
 	// load article from version
 	client := app.Elastic.Client
 	ctx := context.Background()
 	index := app.Conf.ArticleIndex.Name
 	typ := app.Conf.ArticleIndexTypes.Version
 	id := StringFromReq(r, CtxKeyId)
-	article, d := getFullArticle(client, ctx, index, typ, id)
+	article, d := getFullArticle(client, ctx, index, typ, id, logger)
 	if d != nil {
 		return d
 	}
@@ -505,68 +653,103 @@ func publishArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Ht
 	lock.Lock()
 	defer lock.Unlock()
 	_, err := updService.Do(ctx)
+	articleVerGuid := fmt.Sprintf("%v:%v", guid, article.Version)
 	if err != nil {
-		body := fmt.Sprintf("failed to publish article, error: %v", err)
+		body := fmt.Sprintf("failed to publish article version %v, error: %v", articleVerGuid, err)
+		logger.Perror(body)
 		return CreateInternalServerErrorRespData(body)
 	} else {
-		return CreateRespData(http.StatusOK, ContentTypeValueText, "")
+		logger.Pinfof("user %v published article version %v", CmsUserFromReq(r).Username, articleVerGuid)
+		return CreateRespData(http.StatusOK, ContentTypeValueText, []byte{})
 	}
 }
 
 func unpublishArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
-	id := StringFromReq(r, CtxKeyId)
+	logger := CtxLoggerFromReq(r)
+	articleId := StringFromReq(r, CtxKeyId)
 	delService := app.Elastic.Client.Delete()
 	delService.Index(app.Conf.ArticleIndex.Name)
 	delService.Type(app.Conf.ArticleIndexTypes.Publish)
-	delService.Id(id)
+	delService.Id(articleId)
 
-	lock := publishLock.Get(id)
+	lock := publishLock.Get(articleId)
 	lock.Lock()
 	defer lock.Unlock()
 	_, err := delService.Do(context.Background())
 	if err != nil {
 		if elastic.IsNotFound(err) {
-			body := fmt.Sprintf("article %v not found!", id)
+			body := fmt.Sprintf("article %v not found!", articleId)
+			logger.Perror(body)
 			return CreateNotFoundRespData(body)
 		} else {
-			body := fmt.Sprintf("failed to unpublish article, error: %v", err)
+			body := fmt.Sprintf("failed to unpublish article %v, error: %v", articleId, err)
+			logger.Perror(body)
 			return CreateInternalServerErrorRespData(body)
 		}
 	} else {
-		return CreateRespData(http.StatusOK, ContentTypeValueText, "")
+		logger.Pinfof("user %v unpublished article %v", CmsUserFromReq(r).Username, articleId)
+		return CreateRespData(http.StatusOK, ContentTypeValueText, []byte{})
 	}
 }
 
 func ArticleCreate() EndpointHandler {
-	return addAuditLogFields("create", createArticle)
+	h := addAuditLogFields("create", createArticle)
+	h = RequireOneRole(CmsRoleArticleCreate, h)
+	return RequireAuth(h)
 }
 
 func ArticleSave() EndpointHandler {
 	h := addAuditLogFields("save", saveArticle)
-	return GetRequiredStringArg("id", CtxKeyId, h)
+	h = GetRequiredStringArg("id", CtxKeyId, h)
+	h = RequireOneRole(CmsRoleArticleCreate|CmsRoleArticleEdit, h)
+	return RequireAuth(h)
 }
 
-func ArticleSubmit() EndpointHandler {
-	h := addAuditLogFields("submit", submitArticle)
-	return GetRequiredStringArg("id", CtxKeyId, h)
+func ArticleSubmitSelf() EndpointHandler {
+	h := addAuditLogFields("submit", submitArticleSelf)
+	h = GetRequiredStringArg("id", CtxKeyId, h)
+	h = RequireOneRole(CmsRoleArticleCreate|CmsRoleArticleEdit, h)
+	return RequireAuth(h)
 }
 
-func ArticleDiscard() EndpointHandler {
-	h := addAuditLogFields("discard", discardArticle)
-	return GetRequiredStringArg("id", CtxKeyId, h)
+func ArticleDiscardSelf() EndpointHandler {
+	h := addAuditLogFields("discard", discardArticleSelf)
+	h = GetRequiredStringArg("id", CtxKeyId, h)
+	h = RequireOneRole(CmsRoleArticleCreate|CmsRoleArticleEdit, h)
+	return RequireAuth(h)
+}
+
+func ArticleSubmitOther() EndpointHandler {
+	h := addAuditLogFields("submit", submitArticleOther)
+	h = GetRequiredStringArg("id", CtxKeyId, h)
+	h = RequireOneRole(CmsRoleArticleSubmit, h)
+	return RequireAuth(h)
+}
+
+func ArticleDiscardOther() EndpointHandler {
+	h := addAuditLogFields("discard", discardArticleOther)
+	h = GetRequiredStringArg("id", CtxKeyId, h)
+	h = RequireOneRole(CmsRoleArticleSubmit, h)
+	return RequireAuth(h)
 }
 
 func ArticleEdit() EndpointHandler {
 	h := addAuditLogFields("edit", editArticle)
-	return GetRequiredStringArg("id", CtxKeyId, h)
+	h = GetRequiredStringArg("id", CtxKeyId, h)
+	h = RequireOneRole(CmsRoleArticleEdit, h)
+	return RequireAuth(h)
 }
 
 func ArticlePublish() EndpointHandler {
 	h := addAuditLogFields("publish", publishArticle)
-	return GetRequiredStringArg("id", CtxKeyId, h)
+	h = GetRequiredStringArg("id", CtxKeyId, h)
+	h = RequireOneRole(CmsRoleArticlePublish, h)
+	return RequireAuth(h)
 }
 
 func ArticleUnpublish() EndpointHandler {
 	h := addAuditLogFields("unpublish", unpublishArticle)
-	return GetRequiredStringArg("id", CtxKeyId, h)
+	h = GetRequiredStringArg("id", CtxKeyId, h)
+	h = RequireOneRole(CmsRoleArticlePublish, h)
+	return RequireAuth(h)
 }

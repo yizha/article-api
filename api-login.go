@@ -32,10 +32,13 @@ const (
 	CmsRoleArticleEdit CmsRole = 1 << 1
 
 	// submit/discard draft article created by others
-	CmsRoleArticleDraftCleaner CmsRole = 1 << 2
+	CmsRoleArticleSubmit CmsRole = 1 << 2
 
 	// publish/unpublish article
 	CmsRoleArticlePublish CmsRole = 1 << 3
+
+	// create/update/delete login
+	CmsRoleLoginManage CmsRole = 1 << 20
 )
 
 var (
@@ -45,10 +48,12 @@ var (
 
 func init() {
 	CmsRoleId2Name = map[CmsRole]string{
-		CmsRoleArticleCreate:       "create",
-		CmsRoleArticleEdit:         "edit",
-		CmsRoleArticleDraftCleaner: "draft-cleaner",
-		CmsRoleArticlePublish:      "publish",
+		CmsRoleArticleCreate:  "article:create",
+		CmsRoleArticleEdit:    "article:edit",
+		CmsRoleArticleSubmit:  "article:submit",
+		CmsRoleArticlePublish: "article:publish",
+
+		CmsRoleLoginManage: "login:manage",
 	}
 	CmsRoleName2Id = make(map[string]CmsRole)
 	for id, name := range CmsRoleId2Name {
@@ -87,6 +92,10 @@ type CmsUser struct {
 	Username string  `json:"username,omitempty"`
 	Password string  `json:"password,omitempty"`
 	Role     CmsRole `json:"role,omitempty"`
+}
+
+func (u *CmsUser) String() string {
+	return fmt.Sprintf("%v@%v", u.Username, Role2Names(u.Role))
 }
 
 func CmsUserFromReq(req *http.Request) *CmsUser {
@@ -148,27 +157,57 @@ func Login(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpRespons
 	if d != nil {
 		return d
 	}
+	logger := CtxLoggerFromReq(r)
 	//fmt.Println(password)
 	//fmt.Println(user.Password)
 	hashedPassword, err := base64.StdEncoding.DecodeString(user.Password)
 	if err != nil {
 		body := fmt.Sprintf("failed to hex decode user password loaded from elasticsearch, error: %v", err)
+		logger.Perror(body)
 		return CreateInternalServerErrorRespData(body)
 	}
 	if err = bcrypt.CompareHashAndPassword(hashedPassword, []byte(password)); err != nil {
 		//fmt.Println(err)
+		logger.Perror(fmt.Sprintf("wrong password: %v", err))
 		return CreateForbiddenRespData("wrong password!")
 	}
+	// clean hashed-password as we don't want it to be in the token
 	user.Password = ""
 	if token, err := app.Conf.SCookie.Encode(TokenCookieName, user); err == nil {
+		logger.Perror("user %v login successfully.", user.String())
 		return CreateJsonRespData(http.StatusOK, &AuthToken{token})
 	} else {
 		body := fmt.Sprintf("failed to encode user, error: %v", err)
+		logger.Perror(body)
 		return CreateInternalServerErrorRespData(body)
 	}
 }
 
-func CreateLogin(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+func Names2Role(s string) CmsRole {
+	var role CmsRole = 0
+	if len(s) > 0 {
+		for _, name := range strings.Split(s, ",") {
+			if id, ok := CmsRoleName2Id[name]; ok {
+				role = role | id
+			}
+		}
+	}
+	return role
+}
+
+func Role2Names(role CmsRole) []string {
+	names := make([]string, 0)
+	if role > 0 {
+		for id, name := range CmsRoleId2Name {
+			if role&id == id {
+				names = append(names, name)
+			}
+		}
+	}
+	return names
+}
+
+func createLogin(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
 	username, d := ParseQueryStringValue(r.URL.Query(), "username", true, "")
 	if d != nil {
 		return d
@@ -181,23 +220,16 @@ func CreateLogin(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 	if d != nil {
 		return d
 	}
-	var role CmsRole = 0
-	if len(roleStr) > 0 {
-		for _, roleName := range strings.Split(roleStr, ",") {
-			if id, ok := CmsRoleName2Id[roleName]; ok {
-				role = role | id
-			} else {
-				CtxLoggerFromReq(r).Pwarnf("ignore unknown cms user role name %v!", roleName)
-			}
-		}
-	}
+	logger := CtxLoggerFromReq(r)
 	//fmt.Println("starting hashing password ...")
 	password, err := HashPassword(password)
 	if err != nil {
 		body := fmt.Sprintf("failed to hash (bcrypt) password, error: %v", err)
+		logger.Perror(body)
 		return CreateInternalServerErrorRespData(body)
 	}
 	//fmt.Printf("hashed password: %v\n", password)
+	role := Names2Role(roleStr)
 	user := &CmsUser{
 		Username: username,
 		Password: password,
@@ -211,15 +243,20 @@ func CreateLogin(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 	idxService.BodyJson(user)
 	resp, err := idxService.Do(context.Background())
 	if err != nil {
-		if elasticErr, ok := err.(*elastic.Error); ok {
-			return CreateRespData(elasticErr.Status, ContentTypeValueText, err.Error())
-		} else {
-			body := fmt.Sprintf("error indexing user doc, error: %v", err)
-			return CreateInternalServerErrorRespData(body)
-		}
+		body := fmt.Sprintf("error indexing user doc, error: %v", err)
+		logger.Perror(body)
+		return CreateInternalServerErrorRespData(body)
 	} else if !resp.Created {
-		return CreateInternalServerErrorRespData("unknown error!")
+		body := "unknown error!"
+		logger.Perror(body)
+		return CreateInternalServerErrorRespData(body)
 	} else {
-		return CreateRespData(http.StatusOK, ContentTypeValueText, "")
+		logger.Pinfof("user %v create login %v", CmsUserFromReq(r).Username, user.String())
+		return CreateRespData(http.StatusOK, ContentTypeValueText, []byte{})
 	}
+}
+
+func LoginCreate() EndpointHandler {
+	h := RequireOneRole(CmsRoleLoginManage, createLogin)
+	return RequireAuth(h)
 }

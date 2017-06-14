@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -53,6 +54,32 @@ func RequireAuth(h EndpointHandler) EndpointHandler {
 	}
 }
 
+func RequireAllRoles(role CmsRole, h EndpointHandler) EndpointHandler {
+	return func(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+		user := CmsUserFromReq(r)
+		if user.Role&role == role {
+			return h(app, w, r)
+		} else {
+			roleNames := Role2Names(role)
+			body := fmt.Sprintf("Require all of the following roles: %v", roleNames)
+			return CreateForbiddenRespData(body)
+		}
+	}
+}
+
+func RequireOneRole(role CmsRole, h EndpointHandler) EndpointHandler {
+	return func(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+		user := CmsUserFromReq(r)
+		if user.Role&role > 0 {
+			return h(app, w, r)
+		} else {
+			roleNames := Role2Names(role)
+			body := fmt.Sprintf("Require at least one of the following roles: %v", roleNames)
+			return CreateForbiddenRespData(body)
+		}
+	}
+}
+
 func LocalAccessOnly(h EndpointHandler) EndpointHandler {
 	return func(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
 		remoteIP := IPFromRequestRemoteAddr(r.RemoteAddr)
@@ -65,24 +92,24 @@ func LocalAccessOnly(h EndpointHandler) EndpointHandler {
 	}
 }
 
-func CreateRespData(status int, contentType, body string) *HttpResponseData {
+func CreateRespData(status int, contentType string, body []byte) *HttpResponseData {
 	return &HttpResponseData{
 		Status: status,
 		Header: map[string][]string{
 			HeaderContentType: []string{contentType},
 		},
-		Body: strings.NewReader(body),
+		Body: bytes.NewBuffer(body),
 	}
 }
 
 func CreateJsonRespData(status int, val interface{}) *HttpResponseData {
-	if bytes, err := json.Marshal(val); err == nil {
+	if data, err := json.Marshal(val); err == nil {
 		return &HttpResponseData{
 			Status: status,
 			Header: map[string][]string{
 				HeaderContentType: []string{ContentTypeValueJSON},
 			},
-			Body: strings.NewReader(string(bytes)),
+			Body: bytes.NewBuffer(data),
 		}
 	} else {
 		body := fmt.Sprintf("failed to marshal json value, error: %v", err)
