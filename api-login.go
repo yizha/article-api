@@ -6,116 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"strings"
 
 	elastic "github.com/yizha/elastic"
 	"golang.org/x/crypto/bcrypt"
 )
 
-const TokenCookieName = "token"
-
 type AuthToken struct {
 	Token string `json:"token"`
-}
-
-type CmsRole uint64
-
-const (
-
-	// create article
-	// implies save/submit/discard draft article created by self
-	CmsRoleArticleCreate CmsRole = 1 << 0
-
-	// edit article
-	// implies save/submit/discard draft article created by self
-	CmsRoleArticleEdit CmsRole = 1 << 1
-
-	// submit/discard draft article created by others
-	CmsRoleArticleSubmit CmsRole = 1 << 2
-
-	// publish/unpublish article
-	CmsRoleArticlePublish CmsRole = 1 << 3
-
-	// create/update/delete login
-	CmsRoleLoginManage CmsRole = 1 << 20
-)
-
-var (
-	CmsRoleId2Name map[CmsRole]string
-	CmsRoleName2Id map[string]CmsRole
-)
-
-func init() {
-	CmsRoleId2Name = map[CmsRole]string{
-		CmsRoleArticleCreate:  "article:create",
-		CmsRoleArticleEdit:    "article:edit",
-		CmsRoleArticleSubmit:  "article:submit",
-		CmsRoleArticlePublish: "article:publish",
-
-		CmsRoleLoginManage: "login:manage",
-	}
-	CmsRoleName2Id = make(map[string]CmsRole)
-	for id, name := range CmsRoleId2Name {
-		CmsRoleName2Id[name] = id
-	}
-}
-
-func (r CmsRole) MarshalJSON() ([]byte, error) {
-	roles := make([]string, 0)
-	for id, name := range CmsRoleId2Name {
-		if r&id == id {
-			roles = append(roles, name)
-		}
-	}
-	return json.Marshal(roles)
-}
-
-func (r CmsRole) UnmarshalJSON(data []byte) error {
-	roles := make([]string, 0)
-	if err := json.Unmarshal(data, &roles); err != nil {
-		return err
-	}
-	if roles != nil && len(roles) > 0 {
-		for _, name := range roles {
-			if id, ok := CmsRoleName2Id[name]; ok {
-				r = r | id
-			} else {
-				fmt.Fprintf(os.Stderr, "ignore unknown cms user role name %v!", name)
-			}
-		}
-	}
-	return nil
-}
-
-type CmsUser struct {
-	Username string  `json:"username,omitempty"`
-	Password string  `json:"password,omitempty"`
-	Role     CmsRole `json:"role,omitempty"`
-}
-
-func (u *CmsUser) String() string {
-	return fmt.Sprintf("%v@%v", u.Username, Role2Names(u.Role))
-}
-
-func CmsUserFromReq(req *http.Request) *CmsUser {
-	v := req.Context().Value(CtxKeyCmsUser)
-	if v == nil {
-		return nil
-	} else if user, ok := v.(*CmsUser); ok {
-		return user
-	} else {
-		fmt.Fprintf(os.Stdout, "value (%T, %v) under key %v is not of type CmsUser!", v, v, CtxKeyCmsUser)
-		return nil
-	}
-}
-
-func HashPassword(pass string) (string, error) {
-	bytes, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(bytes), nil
 }
 
 func getCmsUser(app *AppRuntime, username string) (*CmsUser, *HttpResponseData) {
@@ -145,11 +42,12 @@ func getCmsUser(app *AppRuntime, username string) (*CmsUser, *HttpResponseData) 
 }
 
 func Login(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
-	username, d := ParseQueryStringValue(r.URL.Query(), "username", true, "")
+	args := r.URL.Query()
+	username, d := ParseQueryStringValue(args, "username", true, "")
 	if d != nil {
 		return d
 	}
-	password, d := ParseQueryStringValue(r.URL.Query(), "password", true, "")
+	password, d := ParseQueryStringValue(args, "password", true, "")
 	if d != nil {
 		return d
 	}
@@ -183,40 +81,17 @@ func Login(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpRespons
 	}
 }
 
-func Names2Role(s string) CmsRole {
-	var role CmsRole = 0
-	if len(s) > 0 {
-		for _, name := range strings.Split(s, ",") {
-			if id, ok := CmsRoleName2Id[name]; ok {
-				role = role | id
-			}
-		}
-	}
-	return role
-}
-
-func Role2Names(role CmsRole) []string {
-	names := make([]string, 0)
-	if role > 0 {
-		for id, name := range CmsRoleId2Name {
-			if role&id == id {
-				names = append(names, name)
-			}
-		}
-	}
-	return names
-}
-
 func createLogin(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
-	username, d := ParseQueryStringValue(r.URL.Query(), "username", true, "")
+	args := r.URL.Query()
+	username, d := ParseQueryStringValue(args, "username", true, "")
 	if d != nil {
 		return d
 	}
-	password, d := ParseQueryStringValue(r.URL.Query(), "password", true, "")
+	password, d := ParseQueryStringValue(args, "password", true, "")
 	if d != nil {
 		return d
 	}
-	roleStr, d := ParseQueryStringValue(r.URL.Query(), "role", false, "")
+	roleStr, d := ParseQueryStringValue(args, "role", false, "")
 	if d != nil {
 		return d
 	}
@@ -256,7 +131,91 @@ func createLogin(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 	}
 }
 
+func updateLogin(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	logger := CtxLoggerFromReq(r)
+	args := r.URL.Query()
+	// username
+	username, d := ParseQueryStringValue(args, "username", true, "")
+	if d != nil {
+		return d
+	}
+	user := make(map[string]interface{})
+	user["username"] = username
+	// password
+	password, d := ParseQueryStringValue(args, "password", false, "")
+	if d != nil {
+		return d
+	}
+	if len(password) > 0 {
+		var err error
+		password, err = HashPassword(password)
+		if err != nil {
+			body := fmt.Sprintf("failed to hash (bcrypt) password, error: %v", err)
+			logger.Perror(body)
+			return CreateInternalServerErrorRespData(body)
+		}
+		user["password"] = password
+	}
+	// for role we need to tell below cases from each other
+	//  1. "role" is not set at all --> don't update user role
+	//  2. "role" is set to blank string --> clear user role
+	//  3. "role" is set to something --> update user role
+	vals, ok := args["role"]
+	if ok && len(vals) > 0 { // this covers case 2 & 3
+		// this filters out invalid role names
+		user["role"] = Role2Names(Names2Role(vals[0]))
+	} // else covers case 1
+
+	updService := app.Elastic.Client.Update()
+	updService.Index(app.Conf.UserIndex.Name)
+	updService.Type(app.Conf.UserIndexTypes.User)
+	updService.Id(username)
+	updService.Doc(user)
+	updService.DocAsUpsert(false)
+	updService.DetectNoop(false)
+	_, err := updService.Do(context.Background())
+	if err != nil {
+		body := fmt.Sprintf("error indexing user doc, error: %v", err)
+		logger.Perror(body)
+		return CreateInternalServerErrorRespData(body)
+	} else {
+		logger.Pinfof("user %v updated login %v", CmsUserFromReq(r).Username, username)
+		return CreateRespData(http.StatusOK, ContentTypeValueText, []byte{})
+	}
+}
+
+func deleteLogin(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	logger := CtxLoggerFromReq(r)
+	username, d := ParseQueryStringValue(r.URL.Query(), "username", true, "")
+	if d != nil {
+		return d
+	}
+	delService := app.Elastic.Client.Delete()
+	delService.Index(app.Conf.UserIndex.Name)
+	delService.Type(app.Conf.UserIndexTypes.User)
+	delService.Id(username)
+	_, err := delService.Do(context.Background())
+	if err != nil {
+		body := fmt.Sprintf("failed to delete login %v, error: %v", username, err)
+		logger.Perror(body)
+		return CreateInternalServerErrorRespData(body)
+	} else {
+		logger.Pinfof("user %v deleted login %v", CmsUserFromReq(r).Username, username)
+		return CreateRespData(http.StatusOK, ContentTypeValueText, []byte{})
+	}
+}
+
 func LoginCreate() EndpointHandler {
 	h := RequireOneRole(CmsRoleLoginManage, createLogin)
+	return RequireAuth(h)
+}
+
+func LoginUpdate() EndpointHandler {
+	h := RequireOneRole(CmsRoleLoginManage, updateLogin)
+	return RequireAuth(h)
+}
+
+func LoginDelete() EndpointHandler {
+	h := RequireOneRole(CmsRoleLoginManage, deleteLogin)
 	return RequireAuth(h)
 }
