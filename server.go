@@ -204,13 +204,13 @@ func registerHandlers(app *AppRuntime) *http.ServeMux {
 	mux.Handle("/login/create", handler(app, http.MethodGet, LocalAccessOnly(CreateLogin)))
 
 	// article endpoints
-	mux.Handle("/article/create", handler(app, http.MethodGet, AuthHandler(ArticleCreate())))
-	mux.Handle("/article/edit", handler(app, http.MethodGet, AuthHandler(ArticleEdit())))
-	mux.Handle("/article/save", handler(app, http.MethodPost, AuthHandler(ArticleSave())))
-	mux.Handle("/article/submit", handler(app, http.MethodPost, AuthHandler(ArticleSubmit())))
-	mux.Handle("/article/discard", handler(app, http.MethodGet, AuthHandler(ArticleDiscard())))
-	mux.Handle("/article/publish", handler(app, http.MethodGet, AuthHandler(ArticlePublish())))
-	mux.Handle("/article/unpublish", handler(app, http.MethodGet, AuthHandler(ArticleUnpublish())))
+	mux.Handle("/article/create", handler(app, http.MethodGet, RequireAuth(ArticleCreate())))
+	mux.Handle("/article/edit", handler(app, http.MethodGet, RequireAuth(ArticleEdit())))
+	mux.Handle("/article/save", handler(app, http.MethodPost, RequireAuth(ArticleSave())))
+	mux.Handle("/article/submit", handler(app, http.MethodPost, RequireAuth(ArticleSubmit())))
+	mux.Handle("/article/discard", handler(app, http.MethodGet, RequireAuth(ArticleDiscard())))
+	mux.Handle("/article/publish", handler(app, http.MethodGet, RequireAuth(ArticlePublish())))
+	mux.Handle("/article/unpublish", handler(app, http.MethodGet, RequireAuth(ArticleUnpublish())))
 
 	return mux
 }

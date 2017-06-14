@@ -35,7 +35,7 @@ func GetRequiredStringArg(argName string, ctxKey CtxKey, h EndpointHandler) Endp
 	}
 }
 
-func AuthHandler(h EndpointHandler) EndpointHandler {
+func RequireAuth(h EndpointHandler) EndpointHandler {
 	return func(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
 		msg := ""
 		if token := r.Header.Get(HeaderAuthToken); len(token) > 0 {
