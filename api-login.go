@@ -43,7 +43,7 @@ func getCmsUser(app *AppRuntime, username string) (*CmsUser, *HttpResponseData) 
 	}
 }
 
-func Login(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+func login(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
 	args := r.URL.Query()
 	username, d := ParseQueryStringValue(args, "username", true, "")
 	if d != nil {
@@ -121,13 +121,20 @@ func createLogin(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 	idxService.Index(app.Conf.UserIndex.Name)
 	idxService.Type(app.Conf.UserIndexTypes.User)
 	idxService.OpType(ESIndexOpCreate)
+	idxService.Refresh("wait_for")
 	idxService.Id(user.Username)
 	idxService.BodyJson(user)
 	resp, err := idxService.Do(context.Background())
 	if err != nil {
-		body := fmt.Sprintf("error indexing user doc, error: %v", err)
-		logger.Perror(body)
-		return CreateInternalServerErrorRespData(body)
+		if elasticErr, ok := err.(*elastic.Error); ok {
+			body := elasticErr.Error()
+			logger.Perror(body)
+			return CreateRespData(elasticErr.Status, ContentTypeValueText, []byte(body))
+		} else {
+			body := fmt.Sprintf("error indexing user doc, error: %v", err)
+			logger.Perror(body)
+			return CreateInternalServerErrorRespData(body)
+		}
 	} else if !resp.Created {
 		body := "unknown error!"
 		logger.Perror(body)
@@ -176,6 +183,7 @@ func updateLogin(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 	updService := app.Elastic.Client.Update()
 	updService.Index(app.Conf.UserIndex.Name)
 	updService.Type(app.Conf.UserIndexTypes.User)
+	updService.Refresh("wait_for")
 	updService.Id(username)
 	updService.Doc(user)
 	updService.DocAsUpsert(false)
@@ -200,6 +208,7 @@ func deleteLogin(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 	delService := app.Elastic.Client.Delete()
 	delService.Index(app.Conf.UserIndex.Name)
 	delService.Type(app.Conf.UserIndexTypes.User)
+	delService.Refresh("wait_for")
 	delService.Id(username)
 	_, err := delService.Do(context.Background())
 	if err != nil {
@@ -212,17 +221,37 @@ func deleteLogin(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 	}
 }
 
+func addLoginAuditLogFields(action string, h EndpointHandler) EndpointHandler {
+	return func(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+		d := h(app, w, r)
+		user := CmsUserFromReq(r)
+		fields := make(map[string]interface{})
+		fields["audit"] = "login"
+		fields["action"] = action
+		fields["user"] = user.Username
+		CtxLoggerFromReq(r).AddFields(fields)
+		return d
+	}
+}
+
+func Login() EndpointHandler {
+	return login
+}
+
 func LoginCreate() EndpointHandler {
-	h := RequireOneRole(CmsRoleLoginManage, createLogin)
+	h := addLoginAuditLogFields("create", createLogin)
+	h = RequireOneRole(CmsRoleLoginManage, h)
 	return RequireAuth(h)
 }
 
 func LoginUpdate() EndpointHandler {
-	h := RequireOneRole(CmsRoleLoginManage, updateLogin)
+	h := addLoginAuditLogFields("update", updateLogin)
+	h = RequireOneRole(CmsRoleLoginManage, h)
 	return RequireAuth(h)
 }
 
 func LoginDelete() EndpointHandler {
-	h := RequireOneRole(CmsRoleLoginManage, deleteLogin)
+	h := addLoginAuditLogFields("delete", deleteLogin)
+	h = RequireOneRole(CmsRoleLoginManage, h)
 	return RequireAuth(h)
 }

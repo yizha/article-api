@@ -202,7 +202,7 @@ func parseArticleId(id string) (string, int64, error) {
 	}
 }
 
-func addAuditLogFields(action string, h EndpointHandler) EndpointHandler {
+func addArticleAuditLogFields(action string, h EndpointHandler) EndpointHandler {
 	return func(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
 		d := h(app, w, r)
 		id := StringFromReq(r, CtxKeyId)
@@ -693,62 +693,62 @@ func unpublishArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *
 }
 
 func ArticleCreate() EndpointHandler {
-	h := addAuditLogFields("create", createArticle)
+	h := addArticleAuditLogFields("create", createArticle)
 	h = RequireOneRole(CmsRoleArticleCreate, h)
 	return RequireAuth(h)
 }
 
 func ArticleSave() EndpointHandler {
-	h := addAuditLogFields("save", saveArticle)
+	h := addArticleAuditLogFields("save", saveArticle)
 	h = GetRequiredStringArg("id", CtxKeyId, h)
 	h = RequireOneRole(CmsRoleArticleCreate|CmsRoleArticleEdit, h)
 	return RequireAuth(h)
 }
 
 func ArticleSubmitSelf() EndpointHandler {
-	h := addAuditLogFields("submit", submitArticleSelf)
+	h := addArticleAuditLogFields("submit", submitArticleSelf)
 	h = GetRequiredStringArg("id", CtxKeyId, h)
 	h = RequireOneRole(CmsRoleArticleCreate|CmsRoleArticleEdit, h)
 	return RequireAuth(h)
 }
 
 func ArticleDiscardSelf() EndpointHandler {
-	h := addAuditLogFields("discard", discardArticleSelf)
+	h := addArticleAuditLogFields("discard", discardArticleSelf)
 	h = GetRequiredStringArg("id", CtxKeyId, h)
 	h = RequireOneRole(CmsRoleArticleCreate|CmsRoleArticleEdit, h)
 	return RequireAuth(h)
 }
 
 func ArticleSubmitOther() EndpointHandler {
-	h := addAuditLogFields("submit", submitArticleOther)
+	h := addArticleAuditLogFields("submit", submitArticleOther)
 	h = GetRequiredStringArg("id", CtxKeyId, h)
 	h = RequireOneRole(CmsRoleArticleSubmit, h)
 	return RequireAuth(h)
 }
 
 func ArticleDiscardOther() EndpointHandler {
-	h := addAuditLogFields("discard", discardArticleOther)
+	h := addArticleAuditLogFields("discard", discardArticleOther)
 	h = GetRequiredStringArg("id", CtxKeyId, h)
 	h = RequireOneRole(CmsRoleArticleSubmit, h)
 	return RequireAuth(h)
 }
 
 func ArticleEdit() EndpointHandler {
-	h := addAuditLogFields("edit", editArticle)
+	h := addArticleAuditLogFields("edit", editArticle)
 	h = GetRequiredStringArg("id", CtxKeyId, h)
 	h = RequireOneRole(CmsRoleArticleEdit, h)
 	return RequireAuth(h)
 }
 
 func ArticlePublish() EndpointHandler {
-	h := addAuditLogFields("publish", publishArticle)
+	h := addArticleAuditLogFields("publish", publishArticle)
 	h = GetRequiredStringArg("id", CtxKeyId, h)
 	h = RequireOneRole(CmsRoleArticlePublish, h)
 	return RequireAuth(h)
 }
 
 func ArticleUnpublish() EndpointHandler {
-	h := addAuditLogFields("unpublish", unpublishArticle)
+	h := addArticleAuditLogFields("unpublish", unpublishArticle)
 	h = GetRequiredStringArg("id", CtxKeyId, h)
 	h = RequireOneRole(CmsRoleArticlePublish, h)
 	return RequireAuth(h)
