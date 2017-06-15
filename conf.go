@@ -36,7 +36,7 @@ var (
 	userIndexDef = `
 {
   "settings" : {
-    "number_of_shards" :   4,
+    "number_of_shards" :   1,
     "number_of_replicas" : 1,
 	"index.mapper.dynamic": false
   },
@@ -188,6 +188,9 @@ type AppConf struct {
 	// we set the result string as an auth-token in header
 	SCookie *securecookie.SecureCookie
 
+	// max age for SCookie
+	SCookieMaxAge time.Duration
+
 	// logging spec
 	// Only support logging to stdout or file
 	// When it is file we use https://github.com/natefinch/lumberjack
@@ -329,7 +332,8 @@ func ParseArgs(args []string) *AppConf {
 		ESHosts:            esHosts,
 		LoggingSpec:        loggingSpec,
 
-		SCookie: scookie,
+		SCookie:       scookie,
+		SCookieMaxAge: time.Duration(*authExp) * time.Second,
 
 		ArticleIndex:      &ESIndex{"article", articleIndexDef},
 		ArticleIndexTypes: articleIndexTypes,

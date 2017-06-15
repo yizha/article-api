@@ -6,13 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	elastic "github.com/yizha/elastic"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type AuthToken struct {
-	Token string `json:"token"`
+	Token  string `json:"token"`
+	Expire string `json:"expire"`
 }
 
 func getCmsUser(app *AppRuntime, username string) (*CmsUser, *HttpResponseData) {
@@ -72,8 +74,13 @@ func Login(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpRespons
 	// clean hashed-password as we don't want it to be in the token
 	user.Password = ""
 	if token, err := app.Conf.SCookie.Encode(TokenCookieName, user); err == nil {
-		logger.Perror("user %v login successfully.", user.String())
-		return CreateJsonRespData(http.StatusOK, &AuthToken{token})
+		logger.Pinfof("user %v login successfully.", user.String())
+		// substract one minute as buffer
+		expire := time.Now().UTC().Add(app.Conf.SCookieMaxAge).Add(-1 * time.Minute)
+		return CreateJsonRespData(http.StatusOK, &AuthToken{
+			Token:  token,
+			Expire: expire.Format("2006-01-02T15:04:05.000Z"),
+		})
 	} else {
 		body := fmt.Sprintf("failed to encode user, error: %v", err)
 		logger.Perror(body)
