@@ -270,7 +270,7 @@ func GetLoginTests(host string, hclient *http.Client, esclient *elastic.Client) 
 			host:           host,
 			hclient:        hclient,
 			esclient:       esclient,
-			stopOnNG:       false,
+			stopOnNG:       true,
 			userIndex:      "user",
 			userType:       "user",
 			rootUserName:   "_test_root_username",

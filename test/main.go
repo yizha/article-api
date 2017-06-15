@@ -17,7 +17,7 @@ type TestCase interface {
 }
 
 func RunTestCase(c TestCase) error {
-	fmt.Printf("[%s] ... ", c.Desc())
+	fmt.Printf("  [%s] ... ", c.Desc())
 	if err := c.Run(); err == nil {
 		fmt.Println("OK")
 		return nil
@@ -35,36 +35,37 @@ type TestCaseGroup interface {
 	GetTestCases() ([]TestCase, error)
 }
 
-func RunTestCaseGroup(grp TestCaseGroup) {
+func RunTestCaseGroup(grp TestCaseGroup) (int, int, int) {
 	grpDesc := grp.Desc()
 	// set up
 	if err := grp.Setup(); err != nil {
 		fmt.Printf("Group [%s] setup failed: %v\n", grpDesc, err)
-		return
+		return -1, 0, 0
 	}
 	// run cases
 	cases, err := grp.GetTestCases()
 	if err != nil {
 		fmt.Printf("Group [%s] get cases failed: %v\n", grpDesc, err)
-		return
+		return -1, 0, 0
 	}
-	if grp.StopOnNG() {
-
-		for _, c := range cases {
-			if err := RunTestCase(c); err != nil {
+	caseCnt, tryCnt, passCnt := len(cases), 0, 0
+	stopOnNG := grp.StopOnNG()
+	for _, c := range cases {
+		err := RunTestCase(c)
+		tryCnt++
+		if err != nil {
+			if stopOnNG {
 				break
 			}
-		}
-	} else {
-		for _, c := range cases {
-			RunTestCase(c)
+		} else {
+			passCnt++
 		}
 	}
 	// tear down
 	if err := grp.TearDown(); err != nil {
 		fmt.Printf("Group [%s] tear down failed: %v\n", grpDesc, err)
-		return
 	}
+	return caseCnt, tryCnt, passCnt
 }
 
 func GetAuthToken(client *http.Client, host, username, password string) (string, error) {
@@ -93,7 +94,7 @@ func main() {
 	flag.Parse()
 
 	hclient := &http.Client{Timeout: 5 * time.Second}
-	esclient, err := elastic.NewClient(
+	esclient, err := elastic.NewSimpleClient(
 		elastic.SetURL(fmt.Sprintf("http://%v", *esHost)),
 	)
 	if err != nil {
@@ -101,6 +102,10 @@ func main() {
 	}
 
 	for _, grp := range GetLoginTests(*host, hclient, esclient) {
-		RunTestCaseGroup(grp)
+		desc := grp.Desc()
+		fmt.Printf("Testing [%s] ...\n", desc)
+		caseCnt, tryCnt, passCnt := RunTestCaseGroup(grp)
+		fmt.Printf("[%s] result, case/tried/passed: %v/%v/%v\n", desc, caseCnt, tryCnt, passCnt)
+		fmt.Println()
 	}
 }
