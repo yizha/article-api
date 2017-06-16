@@ -190,10 +190,10 @@ func (c *ArticleTestCase) Verify() error {
 				} else if a.CreatedBy != c.User.Username {
 					return fmt.Errorf("expecting created_by=%s, but got %s", c.User.Username, a.CreatedBy)
 				}
-			} else { // revision
-				if a.RevisedBy != c.User.Username {
-					return fmt.Errorf("expecting revised_by=%s, but got %s", c.User.Username, a.RevisedBy)
-				}
+			} else if a.Tag == nil || len(a.Tag) != 1 || a.Tag[0] != action {
+				return fmt.Errorf("expecting tag=[%s], bot got %v", action, a.Tag)
+			} else if a.RevisedBy != c.User.Username {
+				return fmt.Errorf("expecting revised_by=%s, but got %s", c.User.Username, a.RevisedBy)
 			}
 		}
 	} else if action == "discard-self" {
