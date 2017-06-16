@@ -30,6 +30,10 @@ type Article struct {
 	LockedBy    string   `json:"locked_by,omitempty"`
 }
 
+func (a *Article) VerGuid() string {
+	return fmt.Sprintf("%s:%d", a.Guid, a.Version)
+}
+
 func (a *Article) IdFor(action string) string {
 	if action == "create" {
 		return ""
@@ -43,6 +47,7 @@ func (a *Article) IdFor(action string) string {
 func (a *Article) RequestBodyFor(action string) (io.Reader, error) {
 	if action == "save" || action == "submit-self" {
 		a.Headline = fmt.Sprintf("test headline create at %v", time.Now().UTC())
+		a.Tag = []string{action}
 		data, err := json.Marshal(a)
 		if err != nil {
 			return nil, err
@@ -53,33 +58,27 @@ func (a *Article) RequestBodyFor(action string) (io.Reader, error) {
 	}
 }
 
-func (a *Article) HandleResponseBodyFor(action string, body io.Reader) error {
+func (a *Article) HandleResponseBodyFor(action string, body []byte) error {
 	if action == "create" {
-		data, err := ioutil.ReadAll(body)
-		if err != nil {
-			return err
-		}
 		newArticle := &Article{}
-		err = json.Unmarshal(data, newArticle)
+		err := json.Unmarshal(body, newArticle)
 		if err != nil {
 			return err
 		}
+		//fmt.Printf("\nnew article returned from endpoint: %+v\n", newArticle)
 		a.Id = newArticle.Id
 		a.Guid = newArticle.Guid
 		a.CreatedBy = newArticle.CreatedBy
 		a.LockedBy = newArticle.LockedBy
 		return nil
 	} else if action == "submit-self" || action == "submit-other" {
-		data, err := ioutil.ReadAll(body)
-		if err != nil {
-			return err
-		}
 		newArticle := &Article{}
-		err = json.Unmarshal(data, newArticle)
+		err := json.Unmarshal(body, newArticle)
 		if err != nil {
 			return err
 		}
 		a.Version = newArticle.Version
+		a.FromVersion = newArticle.FromVersion
 		a.RevisedAt = newArticle.RevisedAt
 		a.RevisedBy = newArticle.RevisedBy
 		return nil
@@ -88,24 +87,54 @@ func (a *Article) HandleResponseBodyFor(action string, body io.Reader) error {
 	}
 }
 
+func getArticle(client *elastic.Client, index, type_, id string) (*Article, error) {
+	get := client.Get()
+	get.Index(index)
+	get.Type(type_)
+	get.Id(id)
+	get.FetchSource(true)
+	get.Realtime(true)
+	resp, err := get.Do(context.Background())
+	if err != nil {
+		if elastic.IsNotFound(err) {
+			return nil, nil
+		} else {
+			return nil, fmt.Errorf("failed to get article %v, error: %v", type_, err)
+		}
+	} else {
+		a := Article{}
+		err := json.Unmarshal(*resp.Source, &a)
+		if err != nil {
+			return nil, fmt.Errorf("failed to unmarshal article, error: %v", err)
+		} else {
+			return &a, nil
+		}
+	}
+}
+
 type ArticleTestCase struct {
 	Host         string
 	Action       string
 	ActionMethod func(string) string
 	Article      *Article
-	AuthToken    string
+	User         *UserToken
 	ExpectStatus int
 
-	client   *http.Client
-	esclient *elastic.Client
+	client       *http.Client
+	esclient     *elastic.Client
+	articleIndex string
+	articleTypes *ArticleTypes
+	noIdInUri    bool
 }
 
 func (c *ArticleTestCase) Uri() string {
 	buf := &bytes.Buffer{}
 	fmt.Fprintf(buf, "/article/%s", c.Action)
-	id := c.Article.IdFor(c.Action)
-	if len(id) > 0 {
-		fmt.Fprintf(buf, "?id=%s", id)
+	if !c.noIdInUri {
+		id := c.Article.IdFor(c.Action)
+		if len(id) > 0 {
+			fmt.Fprintf(buf, "?id=%s", id)
+		}
 	}
 	return buf.String()
 }
@@ -115,6 +144,125 @@ func (c *ArticleTestCase) Desc() string {
 }
 
 func (c *ArticleTestCase) Verify() error {
+	action := c.Action
+	if action == "create" {
+		a, err := getArticle(c.esclient, c.articleIndex, c.articleTypes.Draft, c.Article.Guid)
+		if err != nil {
+			return err
+		} else if a == nil {
+			return fmt.Errorf("\narticle draft not found!")
+		} else {
+			//fmt.Printf("article from es: %+v\n", a)
+			if a.LockedBy != c.User.Username {
+				return fmt.Errorf("expecting locked_by=%v, but got %v", c.User.Username, a.LockedBy)
+			} else if a.Guid != a.Id {
+				return fmt.Errorf("article id (%v) != guid (%v)", a.Id, a.Guid)
+			}
+		}
+	} else if action == "save" {
+		a, err := getArticle(c.esclient, c.articleIndex, c.articleTypes.Draft, c.Article.Guid)
+		if err != nil {
+			return err
+		} else if a == nil {
+			return fmt.Errorf("article draft not found!")
+		} else {
+			if a.Tag == nil || len(a.Tag) != 1 || a.Tag[0] != action {
+				return fmt.Errorf("expecting tag=[%s], bot got %v", action, a.Tag)
+			}
+		}
+	} else if action == "submit-self" {
+		a, err := getArticle(c.esclient, c.articleIndex, c.articleTypes.Draft, c.Article.Guid)
+		if err != nil {
+			return err
+		} else if a != nil {
+			return fmt.Errorf("article draft %s is not deleted!", a.Guid)
+		}
+		a, err = getArticle(c.esclient, c.articleIndex, c.articleTypes.Version, c.Article.VerGuid())
+		if err != nil {
+			return err
+		} else if a == nil {
+			return fmt.Errorf("couldn't find article version %s", c.Article.VerGuid())
+		} else {
+			//fmt.Printf("\narticle from es: %+v\n", a)
+			if c.Article.FromVersion == 0 { // first version
+				if a.RevisedBy != "" {
+					return fmt.Errorf("first version article has revised_by=%s", a.RevisedBy)
+				} else if a.CreatedBy != c.User.Username {
+					return fmt.Errorf("expecting created_by=%s, but got %s", c.User.Username, a.CreatedBy)
+				}
+			} else { // revision
+				if a.RevisedBy != c.User.Username {
+					return fmt.Errorf("expecting revised_by=%s, but got %s", c.User.Username, a.RevisedBy)
+				}
+			}
+		}
+	} else if action == "discard-self" {
+		a, err := getArticle(c.esclient, c.articleIndex, c.articleTypes.Draft, c.Article.Guid)
+		if err != nil {
+			return err
+		} else if a != nil {
+			fmt.Printf("\narticle from es: %+v\n", a)
+			return fmt.Errorf("article draft %s is not deleted!", a.Guid)
+		}
+		return nil
+	} else if action == "submit-other" {
+		a, err := getArticle(c.esclient, c.articleIndex, c.articleTypes.Draft, c.Article.Guid)
+		if err != nil {
+			return err
+		} else if a != nil {
+			return fmt.Errorf("article draft %s is not deleted!", a.Guid)
+		}
+		a, err = getArticle(c.esclient, c.articleIndex, c.articleTypes.Version, c.Article.VerGuid())
+		if err != nil {
+			return err
+		} else if a == nil {
+			return fmt.Errorf("couldn't find article version %s", c.Article.VerGuid())
+		} else {
+			if c.Article.FromVersion == 0 { // first version
+				if a.RevisedBy != "" {
+					return fmt.Errorf("first version article has revised_by=%s", a.RevisedBy)
+				} else if a.CreatedBy != c.User.Username {
+					return fmt.Errorf("expecting created_by=%s, but got %s", c.User.Username, a.CreatedBy)
+				}
+			} else { // revision
+				if a.RevisedBy != c.User.Username {
+					return fmt.Errorf("expecting revised_by=%s, but got %s", c.User.Username, a.RevisedBy)
+				}
+			}
+		}
+	} else if action == "discard-other" {
+		a, err := getArticle(c.esclient, c.articleIndex, c.articleTypes.Draft, c.Article.Guid)
+		if err != nil {
+			return err
+		} else if a != nil {
+			return fmt.Errorf("article draft %s is not deleted!", a.Guid)
+		}
+		return nil
+	} else if action == "edit" {
+		a, err := getArticle(c.esclient, c.articleIndex, c.articleTypes.Draft, c.Article.Guid)
+		if err != nil {
+			return err
+		} else if a == nil {
+			return fmt.Errorf("article draft %s is not there!", a.Guid)
+		}
+	} else if action == "publish" {
+		a, err := getArticle(c.esclient, c.articleIndex, c.articleTypes.Publish, c.Article.Guid)
+		if err != nil {
+			return err
+		} else if a == nil {
+			return fmt.Errorf("article publish %s is not there!", a.VerGuid())
+		}
+		return nil
+	} else if action == "unpublish" {
+		a, err := getArticle(c.esclient, c.articleIndex, c.articleTypes.Publish, c.Article.Guid)
+		if err != nil {
+			return err
+		} else if a != nil {
+			return fmt.Errorf("article publish %s is not deleted!", a.VerGuid())
+		}
+	} else {
+		return fmt.Errorf("unknown action %v!", action)
+	}
 	return nil
 }
 
@@ -124,27 +272,33 @@ func (c *ArticleTestCase) Run() error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(c.ActionMethod(c.Action), url, body)
+	method := c.ActionMethod(c.Action)
+	//fmt.Printf("method=%s,url=%s,body=(%T,%v)\n", method, url, body, body)
+	req, err := http.NewRequest(method, url, body)
 	if err != nil {
 		return err
 	}
-	if c.AuthToken != "" {
-		req.Header.Set(HeaderAuthToken, c.AuthToken)
+	if c.User != nil {
+		req.Header.Set(HeaderAuthToken, c.User.Token)
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body, error :%v", err)
+	}
 	if resp.StatusCode == c.ExpectStatus {
 		if c.ExpectStatus == http.StatusOK {
-			c.Article.HandleResponseBodyFor(c.Action, resp.Body)
+			c.Article.HandleResponseBodyFor(c.Action, data)
 			return c.Verify()
 		} else {
 			return nil
 		}
 	} else {
-		return fmt.Errorf("got %v", resp.StatusCode)
+		return fmt.Errorf("got %v (%v)", resp.StatusCode, string(data))
 	}
 }
 
@@ -154,37 +308,28 @@ type ArticleTypes struct {
 	Publish string
 }
 
-type ArticleTestCaseGroup struct {
-	desc            string
-	host            string
-	hclient         *http.Client
-	esclient        *elastic.Client
-	stopOnNG        bool
-	userIndex       string
-	userType        string
-	articleIndex    string
-	articleTypes    *ArticleTypes
-	createUserName  string
-	createUserPass  string
-	createUserRole  string
-	editUserName    string
-	editUserPass    string
-	editUserRole    string
-	submitUserName  string
-	submitUserPass  string
-	submitUserRole  string
-	publishUserName string
-	publishUserPass string
-	publishUserRole string
-	godName         string
-	godPass         string
-	godRole         string
+type UserToken struct {
+	Username string
+	Password string
+	Role     []string
+	Token    string
+}
 
-	createToken  string
-	editToken    string
-	submitToken  string
-	publishToken string
-	godToken     string
+type ArticleTestCaseGroup struct {
+	desc         string
+	host         string
+	hclient      *http.Client
+	esclient     *elastic.Client
+	stopOnNG     bool
+	userIndex    string
+	userType     string
+	articleIndex string
+	articleTypes *ArticleTypes
+	createUser   *UserToken
+	editUser     *UserToken
+	submitUser   *UserToken
+	publishUser  *UserToken
+	godUser      *UserToken
 }
 
 func (g *ArticleTestCaseGroup) Desc() string {
@@ -200,45 +345,19 @@ func (g *ArticleTestCaseGroup) Setup() error {
 	if err != nil {
 		return err
 	}
-	// create users
-	for _, data := range [][]string{
-		[]string{g.createUserName, g.createUserPass, g.createUserRole},
-		[]string{g.editUserName, g.editUserPass, g.editUserRole},
-		[]string{g.submitUserName, g.submitUserPass, g.submitUserRole},
-		[]string{g.publishUserName, g.publishUserPass, g.publishUserRole},
-		[]string{g.godName, g.godPass, g.godRole},
-	} {
-		err = CreateUser(g.esclient, g.userIndex, g.userType, data[0], data[1], data[2])
+	// create users then get token
+	for _, u := range []*UserToken{g.createUser, g.editUser, g.submitUser, g.publishUser, g.godUser} {
+		//fmt.Println("username:", u.Username, "role:", u.Role)
+		err = CreateUser(g.esclient, g.userIndex, g.userType, u.Username, u.Password, u.Role)
 		if err != nil {
-			return fmt.Errorf("failed to create user %v, error: %v", data[0], err)
+			return fmt.Errorf("failed to create user %v, error: %v", u.Username, err)
 		}
+		token, err := GetAuthToken(g.hclient, g.host, u.Username, u.Password)
+		if err != nil {
+			return fmt.Errorf("failed to get token for user %v, error: %v", u.Username, err)
+		}
+		u.Token = token
 	}
-	// get tokens
-	createToken, err := GetAuthToken(g.hclient, g.host, g.createUserName, g.createUserPass)
-	if err != nil {
-		return err
-	}
-	g.createToken = createToken
-	editToken, err := GetAuthToken(g.hclient, g.host, g.editUserName, g.editUserPass)
-	if err != nil {
-		return err
-	}
-	g.editToken = editToken
-	submitToken, err := GetAuthToken(g.hclient, g.host, g.submitUserName, g.submitUserPass)
-	if err != nil {
-		return err
-	}
-	g.submitToken = submitToken
-	publishToken, err := GetAuthToken(g.hclient, g.host, g.publishUserName, g.publishUserPass)
-	if err != nil {
-		return err
-	}
-	g.publishToken = publishToken
-	godToken, err := GetAuthToken(g.hclient, g.host, g.godName, g.godPass)
-	if err != nil {
-		return err
-	}
-	g.godToken = godToken
 	return nil
 }
 
@@ -253,92 +372,221 @@ func (g *ArticleTestCaseGroup) TearDown() error {
 		return fmt.Errorf("failed to delete test articles: %v", err)
 	}
 	// delete users
-	err = DeleteDocs(g.esclient, g.userIndex, "username", g.createUserName, g.editUserName, g.submitUserName, g.publishUserName, g.godName)
+	err = DeleteDocs(g.esclient, g.userIndex, "username", g.createUser.Username, g.editUser.Username, g.submitUser.Username, g.publishUser.Username, g.godUser.Username)
 	if err != nil {
-		return fmt.Errorf("failed to delete test docs: %v", err)
+		return fmt.Errorf("failed to delete test users: %v", err)
 	}
 	return nil
 }
 
 func (g *ArticleTestCaseGroup) GetTestCases() ([]TestCase, error) {
-	methodActionMap := map[string]string{
-		"create":        http.MethodGet,
-		"save":          http.MethodPost,
-		"submit-self":   http.MethodPost,
-		"discard-self":  http.MethodGet,
-		"submit-other":  http.MethodGet,
-		"discard-other": http.MethodGet,
-		"edit":          http.MethodGet,
-		"publish":       http.MethodGet,
-		"unpublish":     http.MethodGet,
-	}
+	var testCase = func(action string, a *Article, user *UserToken, sts int) *ArticleTestCase {
+		methodActionMap := map[string]string{
+			"create":        http.MethodGet,
+			"save":          http.MethodPost,
+			"submit-self":   http.MethodPost,
+			"discard-self":  http.MethodGet,
+			"submit-other":  http.MethodGet,
+			"discard-other": http.MethodGet,
+			"edit":          http.MethodGet,
+			"publish":       http.MethodGet,
+			"unpublish":     http.MethodGet,
+		}
+		return &ArticleTestCase{
+			Host:   g.host,
+			Action: action,
+			ActionMethod: func(action string) string {
+				if method, ok := methodActionMap[action]; ok {
+					return method
+				} else {
+					return http.MethodPut
+				}
+			},
+			Article:      a,
+			User:         user,
+			ExpectStatus: sts,
 
-	var goodMethodFunc = func(action string) string {
-		if method, ok := methodActionMap[action]; ok {
-			return method
-		} else {
-			return http.MethodPut
+			client:       g.hclient,
+			esclient:     g.esclient,
+			articleIndex: g.articleIndex,
+			articleTypes: g.articleTypes,
 		}
 	}
-	var badMethodFunc = func(action string) string {
-		return http.MethodPut
+	var wrongMethodTestCase = func(action string, a *Article, user *UserToken, sts int) *ArticleTestCase {
+		c := testCase(action, a, user, sts)
+		c.ActionMethod = func(action string) string {
+			return http.MethodPut
+		}
+		return c
 	}
 
-	var testCase = func(action string, a *Article, token string, sts int) *ArticleTestCase {
-		return &ArticleTestCase{g.host, action, goodMethodFunc, a, token, sts, g.hclient, g.esclient}
-	}
-	var wrongMethodTestCase = func(action string, a *Article, token string, sts int) *ArticleTestCase {
-		return &ArticleTestCase{g.host, action, badMethodFunc, a, token, sts, g.hclient, g.esclient}
+	var noArticleIdTestCase = func(action string, a *Article, user *UserToken, sts int) *ArticleTestCase {
+		c := testCase(action, a, user, sts)
+		c.noIdInUri = true
+		return c
 	}
 
-	badToken := "aasdfaf"
+	userWithBadToken := &UserToken{"user", "pass", []string{}, "badtoken"}
 
 	cases := make([]TestCase, 0)
 
 	a := &Article{Guid: "aaaaa"}
+
 	// wrong request method
-	cases = append(cases, wrongMethodTestCase("create", a, "", 405))
-	cases = append(cases, wrongMethodTestCase("save", a, "", 405))
-	cases = append(cases, wrongMethodTestCase("submit-self", a, "", 405))
-	cases = append(cases, wrongMethodTestCase("discard-self", a, "", 405))
-	cases = append(cases, wrongMethodTestCase("submit-other", a, "", 405))
-	cases = append(cases, wrongMethodTestCase("discard-other", a, "", 405))
-	cases = append(cases, wrongMethodTestCase("edit", a, "", 405))
-	cases = append(cases, wrongMethodTestCase("publish", a, "", 405))
-	cases = append(cases, wrongMethodTestCase("unpublish", a, "", 405))
+	cases = append(cases, wrongMethodTestCase("create", a, nil, 405))
+	cases = append(cases, wrongMethodTestCase("save", a, nil, 405))
+	cases = append(cases, wrongMethodTestCase("submit-self", a, nil, 405))
+	cases = append(cases, wrongMethodTestCase("discard-self", a, nil, 405))
+	cases = append(cases, wrongMethodTestCase("submit-other", a, nil, 405))
+	cases = append(cases, wrongMethodTestCase("discard-other", a, nil, 405))
+	cases = append(cases, wrongMethodTestCase("edit", a, nil, 405))
+	cases = append(cases, wrongMethodTestCase("publish", a, nil, 405))
+	cases = append(cases, wrongMethodTestCase("unpublish", a, nil, 405))
 
 	// no token
-	cases = append(cases, testCase("create", a, "", 403))
-	cases = append(cases, testCase("save", a, "", 403))
-	cases = append(cases, testCase("submit-self", a, "", 403))
-	cases = append(cases, testCase("discard-self", a, "", 403))
-	cases = append(cases, testCase("submit-other", a, "", 403))
-	cases = append(cases, testCase("discard-other", a, "", 403))
-	cases = append(cases, testCase("edit", a, "", 403))
-	cases = append(cases, testCase("publish", a, "", 403))
-	cases = append(cases, testCase("unpublish", a, "", 403))
+	cases = append(cases, testCase("create", a, nil, 403))
+	cases = append(cases, testCase("save", a, nil, 403))
+	cases = append(cases, testCase("submit-self", a, nil, 403))
+	cases = append(cases, testCase("discard-self", a, nil, 403))
+	cases = append(cases, testCase("submit-other", a, nil, 403))
+	cases = append(cases, testCase("discard-other", a, nil, 403))
+	cases = append(cases, testCase("edit", a, nil, 403))
+	cases = append(cases, testCase("publish", a, nil, 403))
+	cases = append(cases, testCase("unpublish", a, nil, 403))
 
-	// good token but missing correct role
-	cases = append(cases, testCase("create", a, g.editToken, 403))
-	cases = append(cases, testCase("save", a, g.editToken, 403))
-	cases = append(cases, testCase("submit-self", a, g.editToken, 403))
-	cases = append(cases, testCase("discard-self", a, g.editToken, 403))
-	cases = append(cases, testCase("submit-other", a, g.editToken, 403))
-	cases = append(cases, testCase("discard-other", a, g.editToken, 403))
-	cases = append(cases, testCase("edit", a, g.editToken, 403))
-	cases = append(cases, testCase("publish", a, g.editToken, 403))
-	cases = append(cases, testCase("unpublish", a, g.editToken, 403))
+	// wrong token
+	cases = append(cases, testCase("create", a, g.editUser, 403))
+	cases = append(cases, testCase("save", a, g.submitUser, 403))
+	cases = append(cases, testCase("submit-self", a, g.publishUser, 403))
+	cases = append(cases, testCase("discard-self", a, g.publishUser, 403))
+	cases = append(cases, testCase("submit-other", a, g.editUser, 403))
+	cases = append(cases, testCase("discard-other", a, g.editUser, 403))
+	cases = append(cases, testCase("edit", a, g.createUser, 403))
+	cases = append(cases, testCase("publish", a, g.editUser, 403))
+	cases = append(cases, testCase("unpublish", a, g.editUser, 403))
 
 	// bad token
-	cases = append(cases, testCase("create", a, badToken, 403))
-	cases = append(cases, testCase("save", a, badToken, 403))
-	cases = append(cases, testCase("submit-self", a, badToken, 403))
-	cases = append(cases, testCase("discard-self", a, badToken, 403))
-	cases = append(cases, testCase("submit-other", a, badToken, 403))
-	cases = append(cases, testCase("discard-other", a, badToken, 403))
-	cases = append(cases, testCase("edit", a, badToken, 403))
-	cases = append(cases, testCase("publish", a, badToken, 403))
-	cases = append(cases, testCase("unpublish", a, badToken, 403))
+	cases = append(cases, testCase("create", a, userWithBadToken, 403))
+	cases = append(cases, testCase("save", a, userWithBadToken, 403))
+	cases = append(cases, testCase("submit-self", a, userWithBadToken, 403))
+	cases = append(cases, testCase("discard-self", a, userWithBadToken, 403))
+	cases = append(cases, testCase("submit-other", a, userWithBadToken, 403))
+	cases = append(cases, testCase("discard-other", a, userWithBadToken, 403))
+	cases = append(cases, testCase("edit", a, userWithBadToken, 403))
+	cases = append(cases, testCase("publish", a, userWithBadToken, 403))
+	cases = append(cases, testCase("unpublish", a, userWithBadToken, 403))
+
+	// missing article id
+	cases = append(cases, noArticleIdTestCase("save", a, g.createUser, 400))
+	cases = append(cases, noArticleIdTestCase("submit-self", a, g.createUser, 400))
+	cases = append(cases, noArticleIdTestCase("discard-self", a, g.createUser, 400))
+	cases = append(cases, noArticleIdTestCase("submit-other", a, g.submitUser, 400))
+	cases = append(cases, noArticleIdTestCase("discard-other", a, g.submitUser, 400))
+	cases = append(cases, noArticleIdTestCase("edit", a, g.editUser, 400))
+	cases = append(cases, noArticleIdTestCase("publish", a, g.publishUser, 400))
+	cases = append(cases, noArticleIdTestCase("unpublish", a, g.publishUser, 400))
+
+	// create --> save --> submit-self --> publish --> unpublish
+	a = &Article{}
+	cases = append(cases, testCase("create", a, g.createUser, 200))
+	cases = append(cases, testCase("save", a, g.createUser, 200))
+	cases = append(cases, testCase("submit-self", a, g.createUser, 200))
+	cases = append(cases, testCase("publish", a, g.publishUser, 200))
+	cases = append(cases, testCase("unpublish", a, g.publishUser, 200))
+
+	// create --> save --> submit-other --> publish --> unpublish
+	a = &Article{}
+	cases = append(cases, testCase("create", a, g.createUser, 200))
+	cases = append(cases, testCase("save", a, g.createUser, 200))
+	cases = append(cases, testCase("submit-other", a, g.submitUser, 200))
+	cases = append(cases, testCase("publish", a, g.publishUser, 200))
+	cases = append(cases, testCase("unpublish", a, g.publishUser, 200))
+
+	// create --> save --> submit-self --> edit --> submit-self --> publish --> unpublish
+	a = &Article{}
+	cases = append(cases, testCase("create", a, g.createUser, 200))
+	cases = append(cases, testCase("save", a, g.createUser, 200))
+	cases = append(cases, testCase("submit-self", a, g.createUser, 200))
+	cases = append(cases, testCase("edit", a, g.editUser, 200))
+	cases = append(cases, testCase("submit-self", a, g.editUser, 200))
+	cases = append(cases, testCase("publish", a, g.publishUser, 200))
+	cases = append(cases, testCase("unpublish", a, g.publishUser, 200))
+
+	// create --> save --> submit-self --> edit --> submit-other --> publish --> unpublish
+	a = &Article{}
+	cases = append(cases, testCase("create", a, g.createUser, 200))
+	cases = append(cases, testCase("save", a, g.createUser, 200))
+	cases = append(cases, testCase("submit-self", a, g.createUser, 200))
+	cases = append(cases, testCase("edit", a, g.editUser, 200))
+	cases = append(cases, testCase("submit-other", a, g.submitUser, 200))
+	cases = append(cases, testCase("publish", a, g.publishUser, 200))
+	cases = append(cases, testCase("unpublish", a, g.publishUser, 200))
+
+	// create --> save --> discard-self
+	a = &Article{}
+	cases = append(cases, testCase("create", a, g.createUser, 200))
+	cases = append(cases, testCase("save", a, g.createUser, 200))
+	cases = append(cases, testCase("discard-self", a, g.createUser, 200))
+
+	// create --> save --> discard-other
+	a = &Article{}
+	cases = append(cases, testCase("create", a, g.createUser, 200))
+	cases = append(cases, testCase("save", a, g.createUser, 200))
+	cases = append(cases, testCase("discard-other", a, g.submitUser, 200))
+
+	// create --> save --> submit-self --> edit --> discard-self
+	a = &Article{}
+	cases = append(cases, testCase("create", a, g.createUser, 200))
+	cases = append(cases, testCase("save", a, g.createUser, 200))
+	cases = append(cases, testCase("submit-self", a, g.createUser, 200))
+	cases = append(cases, testCase("edit", a, g.editUser, 200))
+	cases = append(cases, testCase("discard-self", a, g.editUser, 200))
+
+	// create --> save --> submit-self --> edit --> discard-other
+	a = &Article{}
+	cases = append(cases, testCase("create", a, g.createUser, 200))
+	cases = append(cases, testCase("save", a, g.createUser, 200))
+	cases = append(cases, testCase("submit-self", a, g.createUser, 200))
+	cases = append(cases, testCase("edit", a, g.editUser, 200))
+	cases = append(cases, testCase("discard-other", a, g.submitUser, 200))
+
+	// create --> discard-self
+	a = &Article{}
+	cases = append(cases, testCase("create", a, g.createUser, 200))
+	cases = append(cases, testCase("discard-self", a, g.createUser, 200))
+
+	// create --> discard-other
+	a = &Article{}
+	cases = append(cases, testCase("create", a, g.createUser, 200))
+	cases = append(cases, testCase("discard-other", a, g.submitUser, 200))
+
+	// god plays here
+	a = &Article{}
+	cases = append(cases, testCase("create", a, g.godUser, 200))
+	cases = append(cases, testCase("save", a, g.godUser, 200))
+	cases = append(cases, testCase("submit-self", a, g.godUser, 200))
+	cases = append(cases, testCase("edit", a, g.godUser, 200))
+	cases = append(cases, testCase("submit-other", a, g.godUser, 200))
+	cases = append(cases, testCase("publish", a, g.godUser, 200))
+	cases = append(cases, testCase("unpublish", a, g.godUser, 200))
+
+	a = &Article{}
+	cases = append(cases, testCase("create", a, g.godUser, 200))
+	cases = append(cases, testCase("save", a, g.godUser, 200))
+	cases = append(cases, testCase("discard-self", a, g.godUser, 200))
+
+	a = &Article{}
+	cases = append(cases, testCase("create", a, g.godUser, 200))
+	cases = append(cases, testCase("save", a, g.godUser, 200))
+	cases = append(cases, testCase("discard-other", a, g.godUser, 200))
+
+	a = &Article{}
+	cases = append(cases, testCase("create", a, g.godUser, 200))
+	cases = append(cases, testCase("discard-self", a, g.godUser, 200))
+
+	a = &Article{}
+	cases = append(cases, testCase("create", a, g.godUser, 200))
+	cases = append(cases, testCase("discard-other", a, g.godUser, 200))
 
 	return cases, nil
 }
@@ -358,20 +606,10 @@ func GetArticleTests(host string, hclient *http.Client, esclient *elastic.Client
 			Version: "version",
 			Publish: "publish",
 		},
-		createUserName:  "_test_user_create",
-		createUserPass:  "000",
-		createUserRole:  "article:create",
-		editUserName:    "_test_user_edit",
-		editUserPass:    "123",
-		editUserRole:    "article:edit",
-		submitUserName:  "_test_user_submit",
-		submitUserPass:  "456",
-		submitUserRole:  "article:submit",
-		publishUserName: "_test_user_publish",
-		publishUserPass: "789",
-		publishUserRole: "article:publish",
-		godName:         "god",
-		godPass:         "666",
-		godRole:         "article:create,article:edit,article:submit,article:publish",
+		createUser:  &UserToken{"_test_user_create", "000", []string{"article:create"}, ""},
+		editUser:    &UserToken{"_test_user_edit", "123", []string{"article:edit"}, ""},
+		submitUser:  &UserToken{"_test_user_submit", "456", []string{"article:submit"}, ""},
+		publishUser: &UserToken{"_test_user_publish", "789", []string{"article:publish"}, ""},
+		godUser:     &UserToken{"_test_user_god", "666", []string{"article:create", "article:edit", "article:submit", "article:publish"}, ""},
 	}
 }

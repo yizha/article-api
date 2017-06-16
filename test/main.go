@@ -100,7 +100,7 @@ func DeleteDocs(client *elastic.Client, index string, field string, vals ...inte
 	return err
 }
 
-func CreateUser(client *elastic.Client, index, type_, username, password, roles string) error {
+func CreateUser(client *elastic.Client, index, type_, username, password string, roles []string) error {
 	data, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		//fmt.Println("failed to bcrypt password:", err)
@@ -116,7 +116,7 @@ func CreateUser(client *elastic.Client, index, type_, username, password, roles 
 	idx.BodyJson(map[string]interface{}{
 		"username": username,
 		"password": password,
-		"role":     []string{"login:manage"},
+		"role":     roles,
 	})
 	_, err = idx.Do(context.Background())
 	return err

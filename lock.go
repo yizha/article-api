@@ -48,3 +48,10 @@ func (l *UniqStrMutex) return_(sm *StrMutex) {
 		delete(l.locks, sm.value)
 	}
 }
+
+func NewUniqStrMutex() *UniqStrMutex {
+	return &UniqStrMutex{
+		l:     &sync.Mutex{},
+		locks: make(map[string]*StrMutex),
+	}
+}

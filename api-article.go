@@ -31,6 +31,7 @@ const (
 if (ctx._source.locked_by != params.username) {
   ctx.op = "none"
 } else {
+  ctx._source.guid = params.guid;
   ctx._source.headline = params.headline;
   ctx._source.summary = params.summary;
   ctx._source.content = params.content;
@@ -49,8 +50,8 @@ if (ctx._source.locked_by != params.username) {
 )
 
 var (
-	draftLock   = &UniqStrMutex{}
-	publishLock = &UniqStrMutex{}
+	draftLock   = NewUniqStrMutex()
+	publishLock = NewUniqStrMutex()
 )
 
 type JSONTime struct {
@@ -243,6 +244,7 @@ func createArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Htt
 	idxService.Index(app.Conf.ArticleIndex.Name)
 	idxService.Type(app.Conf.ArticleIndexTypes.Draft)
 	idxService.BodyJson(article)
+	idxService.Refresh("wait_for")
 	resp, err := idxService.Do(context.Background())
 	if err != nil {
 		body := fmt.Sprintf("error creating new article doc: %v", err)
@@ -268,11 +270,12 @@ func createArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Htt
 	}
 }
 
-func saveArticleDraft(app *AppRuntime, user *CmsUser, article *Article, logger *JsonLogger) (*Article, *HttpResponseData) {
+func saveArticleDraft(app *AppRuntime, user *CmsUser, article *Article, logger *JsonLogger, waitForRefresh bool) (*Article, *HttpResponseData) {
 	username := user.Username
 	script := elastic.NewScript(ESScriptSaveArticle)
 	article.RevisedAt = &JSONTime{time.Now().UTC()}
 	script.Type("inline").Lang("painless").Params(map[string]interface{}{
+		"guid":       article.Guid,
 		"headline":   article.Headline,
 		"summary":    article.Summary,
 		"content":    article.Content,
@@ -287,6 +290,9 @@ func saveArticleDraft(app *AppRuntime, user *CmsUser, article *Article, logger *
 	updService.Id(article.Id)
 	updService.Script(script)
 	updService.DetectNoop(true)
+	if waitForRefresh {
+		updService.Refresh("wait_for")
+	}
 	resp, err := updService.Do(context.Background())
 	//fmt.Printf("resp: %T, %+v\n", resp, resp)
 	//fmt.Printf("error: %v\n", err)
@@ -331,13 +337,14 @@ func saveArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 		return CreateInternalServerErrorRespData(body)
 	}
 	article.Id = StringFromReq(r, CtxKeyId)
+	article.Guid = article.Id
 	user := CmsUserFromReq(r)
 	// lock on the article draft
 	lock := draftLock.Get(article.Id)
 	lock.Lock()
 	defer lock.Unlock()
 	// save article
-	article, d := saveArticleDraft(app, user, article, logger)
+	article, d := saveArticleDraft(app, user, article, logger, true)
 	if d != nil {
 		return d
 	} else {
@@ -362,13 +369,14 @@ func submitArticleSelf(app *AppRuntime, w http.ResponseWriter, r *http.Request) 
 		return CreateInternalServerErrorRespData(body)
 	}
 	article.Id = StringFromReq(r, CtxKeyId)
+	article.Guid = article.Id
 	user := CmsUserFromReq(r)
 	// lock on the article draft
 	lock := draftLock.Get(article.Id)
 	lock.Lock()
 	defer lock.Unlock()
 	// save article draft
-	article, d := saveArticleDraft(app, user, article, logger)
+	article, d := saveArticleDraft(app, user, article, logger, false)
 	if d != nil {
 		return d
 	}
@@ -378,12 +386,12 @@ func submitArticleSelf(app *AppRuntime, w http.ResponseWriter, r *http.Request) 
 	verGuid := fmt.Sprintf("%v:%v", article.Guid, ver)
 	article.Id = verGuid
 	article.Version = ver
-	if article.FromVersion == 0 { // it's a create
+	if article.FromVersion == 0 { // it's the first version
 		article.CreatedAt = jt
 		article.CreatedBy = user.Username
 		article.RevisedAt = nil
 		article.RevisedBy = ""
-	} else { // it's an edit
+	} else { // it's a revision
 		article.RevisedAt = jt
 		article.RevisedBy = user.Username
 	}
@@ -412,6 +420,7 @@ func submitArticleSelf(app *AppRuntime, w http.ResponseWriter, r *http.Request) 
 	delService.Index(app.Conf.ArticleIndex.Name)
 	delService.Type(app.Conf.ArticleIndexTypes.Draft)
 	delService.Id(article.Guid)
+	delService.Refresh("wait_for")
 	_, err = delService.Do(ctx)
 	if err != nil {
 		body := fmt.Sprintf("failed to delete article draft %v, error: %v", article.Guid, err)
@@ -439,7 +448,7 @@ func discardArticleSelf(app *AppRuntime, w http.ResponseWriter, r *http.Request)
 	articleId := StringFromReq(r, CtxKeyId)
 	username := CmsUserFromReq(r).Username
 
-	script := elastic.NewScript(ESScriptSaveArticle)
+	script := elastic.NewScript(ESScriptDiscardArticle)
 	script.Type("inline").Lang("painless").Params(map[string]interface{}{
 		"username": username,
 	})
@@ -449,6 +458,7 @@ func discardArticleSelf(app *AppRuntime, w http.ResponseWriter, r *http.Request)
 	updService.Id(articleId)
 	updService.Script(script)
 	updService.DetectNoop(true)
+	updService.Refresh("wait_for")
 	resp, err := updService.Do(context.Background())
 	if err != nil {
 		if elastic.IsNotFound(err) {
@@ -465,7 +475,7 @@ func discardArticleSelf(app *AppRuntime, w http.ResponseWriter, r *http.Request)
 			body := "delete article locked by another user is not allowed!"
 			logger.Perror(body)
 			return CreateForbiddenRespData(body)
-		} else if resp.Result == "updated" {
+		} else if resp.Result == "deleted" {
 			logger.Pinfof("user %v deleted article draft %v", username, articleId)
 			return CreateRespData(http.StatusOK, ContentTypeValueText, []byte{})
 		} else {
@@ -489,6 +499,7 @@ func submitArticleOther(app *AppRuntime, w http.ResponseWriter, r *http.Request)
 	if d != nil {
 		return d
 	}
+	article.Guid = article.Id // in case it is a newly created article without any "save"
 	// lock on the article draft
 	lock := draftLock.Get(article.Id)
 	lock.Lock()
@@ -499,12 +510,12 @@ func submitArticleOther(app *AppRuntime, w http.ResponseWriter, r *http.Request)
 	verGuid := fmt.Sprintf("%v:%v", article.Guid, ver)
 	article.Id = verGuid
 	article.Version = ver
-	if article.FromVersion == 0 { // it's a create
+	if article.FromVersion == 0 { // it's the first version
 		article.CreatedAt = jt
 		article.CreatedBy = user.Username
 		article.RevisedAt = nil
 		article.RevisedBy = ""
-	} else { // it's an edit
+	} else { // it's a revision
 		article.RevisedAt = jt
 		article.RevisedBy = user.Username
 	}
@@ -531,6 +542,7 @@ func submitArticleOther(app *AppRuntime, w http.ResponseWriter, r *http.Request)
 	delService.Index(app.Conf.ArticleIndex.Name)
 	delService.Type(app.Conf.ArticleIndexTypes.Draft)
 	delService.Id(article.Guid)
+	delService.Refresh("wait_for")
 	_, err = delService.Do(ctx)
 	if err != nil {
 		body := fmt.Sprintf("failed to delete article draft %v, error: %v", article.Guid, err)
@@ -562,6 +574,7 @@ func discardArticleOther(app *AppRuntime, w http.ResponseWriter, r *http.Request
 	delService.Index(app.Conf.ArticleIndex.Name)
 	delService.Type(app.Conf.ArticleIndexTypes.Draft)
 	delService.Id(articleId)
+	delService.Refresh("wait_for")
 	_, err := delService.Do(context.Background())
 	if err != nil {
 		body := fmt.Sprintf("failed to delete article draft %v, error: %v", articleId, err)
@@ -601,6 +614,7 @@ func editArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 	idxService.OpType(ESIndexOpCreate)
 	idxService.Id(article.Id)
 	idxService.BodyJson(article)
+	idxService.Refresh("wait_for")
 
 	lock := draftLock.Get(article.Id)
 	lock.Lock()
@@ -648,6 +662,7 @@ func publishArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Ht
 	updService.Id(guid)
 	updService.Doc(article)
 	updService.DocAsUpsert(true)
+	updService.Refresh("wait_for")
 
 	lock := publishLock.Get(guid)
 	lock.Lock()
@@ -671,6 +686,7 @@ func unpublishArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *
 	delService.Index(app.Conf.ArticleIndex.Name)
 	delService.Type(app.Conf.ArticleIndexTypes.Publish)
 	delService.Id(articleId)
+	delService.Refresh("wait_for")
 
 	lock := publishLock.Get(articleId)
 	lock.Lock()

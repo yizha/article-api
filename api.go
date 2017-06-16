@@ -60,8 +60,9 @@ func RequireAllRoles(role CmsRole, h EndpointHandler) EndpointHandler {
 		if user.Role&role == role {
 			return h(app, w, r)
 		} else {
-			roleNames := Role2Names(role)
-			body := fmt.Sprintf("Require all of the following roles: %v", roleNames)
+			requiredRoles := Role2Names(role)
+			actualRoles := Role2Names(user.Role)
+			body := fmt.Sprintf("Require all %v, but user has %v", requiredRoles, actualRoles)
 			return CreateForbiddenRespData(body)
 		}
 	}
@@ -73,8 +74,9 @@ func RequireOneRole(role CmsRole, h EndpointHandler) EndpointHandler {
 		if user.Role&role > 0 {
 			return h(app, w, r)
 		} else {
-			roleNames := Role2Names(role)
-			body := fmt.Sprintf("Require at least one of the following roles: %v", roleNames)
+			requiredRoles := Role2Names(role)
+			actualRoles := Role2Names(user.Role)
+			body := fmt.Sprintf("Require at least one of %v, but user has %v", requiredRoles, actualRoles)
 			return CreateForbiddenRespData(body)
 		}
 	}

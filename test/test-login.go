@@ -83,7 +83,7 @@ func (g *LoginTestCaseGroup) Setup() error {
 		return err
 	}
 	// create root user
-	return CreateUser(g.esclient, g.userIndex, g.userType, g.rootUserName, g.rootUserPass, "login:manage")
+	return CreateUser(g.esclient, g.userIndex, g.userType, g.rootUserName, g.rootUserPass, []string{"login:manage"})
 }
 
 func (g *LoginTestCaseGroup) TearDown() error {
