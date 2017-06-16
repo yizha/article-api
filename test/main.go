@@ -1,14 +1,19 @@
 package main
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/yizha/elastic"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type TestCase interface {
@@ -40,19 +45,19 @@ func RunTestCaseGroup(grp TestCaseGroup) (int, int, int) {
 	// set up
 	if err := grp.Setup(); err != nil {
 		fmt.Printf("Group [%s] setup failed: %v\n", grpDesc, err)
-		return -1, 0, 0
+		return 0, 0, 0
 	}
 	// run cases
 	cases, err := grp.GetTestCases()
 	if err != nil {
 		fmt.Printf("Group [%s] get cases failed: %v\n", grpDesc, err)
-		return -1, 0, 0
+		return 0, 0, 0
 	}
-	caseCnt, tryCnt, passCnt := len(cases), 0, 0
+	caseCnt, runCnt, passCnt := len(cases), 0, 0
 	stopOnNG := grp.StopOnNG()
 	for _, c := range cases {
 		err := RunTestCase(c)
-		tryCnt++
+		runCnt++
 		if err != nil {
 			if stopOnNG {
 				break
@@ -65,7 +70,7 @@ func RunTestCaseGroup(grp TestCaseGroup) (int, int, int) {
 	if err := grp.TearDown(); err != nil {
 		fmt.Printf("Group [%s] tear down failed: %v\n", grpDesc, err)
 	}
-	return caseCnt, tryCnt, passCnt
+	return caseCnt, runCnt, passCnt
 }
 
 func GetAuthToken(client *http.Client, host, username, password string) (string, error) {
@@ -86,6 +91,37 @@ func GetAuthToken(client *http.Client, host, username, password string) (string,
 	return m["token"], nil
 }
 
+func DeleteDocs(client *elastic.Client, index string, field string, vals ...interface{}) error {
+	// delete test users
+	del := client.DeleteByQuery(index)
+	del.Refresh("wait_for")
+	del.Query(elastic.NewTermsQuery(field, vals...))
+	_, err := del.Do(context.Background())
+	return err
+}
+
+func CreateUser(client *elastic.Client, index, type_, username, password, roles string) error {
+	data, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		//fmt.Println("failed to bcrypt password:", err)
+		return err
+	}
+	password = base64.StdEncoding.EncodeToString(data)
+	idx := client.Index()
+	idx.Index(index)
+	idx.Type(type_)
+	idx.Refresh("wait_for")
+	idx.Id(username)
+	idx.OpType("create")
+	idx.BodyJson(map[string]interface{}{
+		"username": username,
+		"password": password,
+		"role":     []string{"login:manage"},
+	})
+	_, err = idx.Do(context.Background())
+	return err
+}
+
 func main() {
 
 	host := flag.String("host", "localhost:8080", "Target host.")
@@ -101,11 +137,55 @@ func main() {
 		panic(err)
 	}
 
-	for _, grp := range GetLoginTests(*host, hclient, esclient) {
+	caseGroupMap := map[string]func(string, *http.Client, *elastic.Client) TestCaseGroup{
+		"login":   GetLoginTests,
+		"article": GetArticleTests,
+	}
+
+	caseGroupNames := make([]string, 0, len(caseGroupMap))
+	for k, _ := range caseGroupMap {
+		caseGroupNames = append(caseGroupNames, k)
+	}
+
+	var selectedCaseGroupNames []string
+	args := flag.Args()
+	if args != nil && len(args) > 0 && len(args[0]) > 0 && args[0] != "all" {
+		selectedCaseGroupNames = make([]string, 0)
+		for _, one := range strings.Split(args[0], ",") {
+			if _, ok := caseGroupMap[one]; ok {
+				selectedCaseGroupNames = append(selectedCaseGroupNames, one)
+			} else {
+				fmt.Printf("Ignore unknown test group name: %v\n", one)
+			}
+		}
+		if len(selectedCaseGroupNames) <= 0 {
+			fmt.Println("All given test group names are unknown!")
+			os.Exit(1)
+		}
+	} else {
+		selectedCaseGroupNames = caseGroupNames
+	}
+
+	fmt.Printf("Going to run these test groups: %v\n", selectedCaseGroupNames)
+	fmt.Println()
+
+	allCase, allRun, allPass := 0, 0, 0
+	for _, name := range selectedCaseGroupNames {
+		grp := caseGroupMap[name](*host, hclient, esclient)
 		desc := grp.Desc()
 		fmt.Printf("Testing [%s] ...\n", desc)
-		caseCnt, tryCnt, passCnt := RunTestCaseGroup(grp)
-		fmt.Printf("[%s] result, case/tried/passed: %v/%v/%v\n", desc, caseCnt, tryCnt, passCnt)
+		caseCnt, runCnt, passCnt := RunTestCaseGroup(grp)
+		allCase += caseCnt
+		allRun += runCnt
+		allPass += passCnt
+		fmt.Printf("[%s] result, case/ran/passed: %v/%v/%v\n", desc, caseCnt, runCnt, passCnt)
 		fmt.Println()
+	}
+	fmt.Printf("Overall result, case/ran/passed: %v/%v/%v\n", allCase, allRun, allPass)
+
+	if allCase == allPass {
+		os.Exit(0)
+	} else {
+		os.Exit(1)
 	}
 }

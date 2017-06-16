@@ -2,14 +2,11 @@ package main
 
 import (
 	"bytes"
-	"context"
-	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/yizha/elastic"
-	"golang.org/x/crypto/bcrypt"
 )
 
 const HeaderAuthToken = "X-Auth-Token"
@@ -81,52 +78,21 @@ func (g *LoginTestCaseGroup) StopOnNG() bool {
 }
 
 func (g *LoginTestCaseGroup) Setup() error {
-	// delete test users
-	del := g.esclient.DeleteByQuery(g.userIndex)
-	del.Refresh("wait_for")
-	del.Query(elastic.NewTermsQuery("username", g.mgrUserName, g.nonMgrUserName, g.rootUserName))
-	ctx := context.Background()
-	_, err := del.Do(ctx)
+	err := g.TearDown()
 	if err != nil {
-		//fmt.Println("failed to delete test users:", err)
 		return err
 	}
 	// create root user
-	data, err := bcrypt.GenerateFromPassword([]byte(g.rootUserPass), bcrypt.DefaultCost)
-	if err != nil {
-		//fmt.Println("failed to bcrypt password:", err)
-		return err
-	}
-	password := base64.StdEncoding.EncodeToString(data)
-
-	idx := g.esclient.Index()
-	idx.Index(g.userIndex)
-	idx.Type(g.userType)
-	idx.Refresh("wait_for")
-	idx.Id(g.rootUserName)
-	idx.OpType("create")
-	idx.BodyJson(map[string]interface{}{
-		"username": g.rootUserName,
-		"password": password,
-		"role":     []string{"login:manage"},
-	})
-	_, err = idx.Do(ctx)
-	if err != nil {
-		//fmt.Println("failed to create root user:", err)
-		return err
-	}
-	return nil
+	return CreateUser(g.esclient, g.userIndex, g.userType, g.rootUserName, g.rootUserPass, "login:manage")
 }
 
 func (g *LoginTestCaseGroup) TearDown() error {
 	// delete test users
-	del := g.esclient.DeleteByQuery(g.userIndex)
-	del.Refresh("wait_for")
-	del.Query(elastic.NewTermsQuery("username", g.mgrUserName, g.nonMgrUserName, g.rootUserName))
-	ctx := context.Background()
-	_, err := del.Do(ctx)
-	//fmt.Println("tear down error:", err)
-	return err
+	err := DeleteDocs(g.esclient, g.userIndex, "username", g.mgrUserName, g.nonMgrUserName, g.rootUserName)
+	if err != nil {
+		return fmt.Errorf("failed to delete test users, error: %v", err)
+	}
+	return nil
 }
 
 func loginUri(path, username, password, roles string) string {
@@ -263,22 +229,20 @@ func (g *LoginTestCaseGroup) GetTestCases() ([]TestCase, error) {
 	return cases, nil
 }
 
-func GetLoginTests(host string, hclient *http.Client, esclient *elastic.Client) []TestCaseGroup {
-	return []TestCaseGroup{
-		&LoginTestCaseGroup{
-			desc:           "Login API Group",
-			host:           host,
-			hclient:        hclient,
-			esclient:       esclient,
-			stopOnNG:       true,
-			userIndex:      "user",
-			userType:       "user",
-			rootUserName:   "_test_root_username",
-			rootUserPass:   "000",
-			mgrUserName:    "_test_mgr_user",
-			mgrUserPass:    "123",
-			nonMgrUserName: "_test_non_mgr_user",
-			nonMgrUserPass: "456",
-		},
+func GetLoginTests(host string, hclient *http.Client, esclient *elastic.Client) TestCaseGroup {
+	return &LoginTestCaseGroup{
+		desc:           "Login API Group",
+		host:           host,
+		hclient:        hclient,
+		esclient:       esclient,
+		stopOnNG:       true,
+		userIndex:      "user",
+		userType:       "user",
+		rootUserName:   "_test_root_username",
+		rootUserPass:   "000",
+		mgrUserName:    "_test_mgr_user",
+		mgrUserPass:    "123",
+		nonMgrUserName: "_test_non_mgr_user",
+		nonMgrUserPass: "456",
 	}
 }
