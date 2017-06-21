@@ -74,7 +74,7 @@ func RunTestCaseGroup(grp TestCaseGroup) (int, int, int) {
 }
 
 func GetAuthToken(client *http.Client, host, username, password string) (string, error) {
-	resp, err := client.Get(fmt.Sprintf("http://%s/login?username=%s&password=%s", host, username, password))
+	resp, err := client.Get(fmt.Sprintf("http://%s/api/login?username=%s&password=%s", host, username, password))
 	if err != nil {
 		return "", err
 	}
@@ -83,12 +83,12 @@ func GetAuthToken(client *http.Client, host, username, password string) (string,
 	if err != nil {
 		return "", err
 	}
-	m := make(map[string]string)
+	m := make(map[string]interface{})
 	err = json.Unmarshal(data, &m)
 	if err != nil {
 		return "", err
 	}
-	return m["token"], nil
+	return m["token"].(string), nil
 }
 
 func DeleteDocs(client *elastic.Client, index string, field string, vals ...interface{}) error {

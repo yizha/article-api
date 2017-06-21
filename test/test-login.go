@@ -97,7 +97,7 @@ func (g *LoginTestCaseGroup) TearDown() error {
 
 func loginUri(path, username, password, roles string) string {
 	buf := &bytes.Buffer{}
-	fmt.Fprintf(buf, "%s", path)
+	fmt.Fprintf(buf, "/api%s", path)
 	firstArg := true
 	addArg := func(b *bytes.Buffer, name, val string) {
 		if len(val) > 0 {

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -708,6 +709,65 @@ func unpublishArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *
 	}
 }
 
+type ArticleVersions []*Article
+
+func (v ArticleVersions) Len() int           { return len(v) }
+func (v ArticleVersions) Swap(i, j int)      { v[i], v[j] = v[j], v[i] }
+func (v ArticleVersions) Less(i, j int) bool { return v[i].Version < v[j].Version }
+
+type CmsArticle struct {
+	Draft    *Article        `json:"draft,omitempty"`
+	Versions ArticleVersions `json:"versions,omitempty"`
+	Publish  *Article        `json:"publish,omitempty"`
+}
+
+func getCmsArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	logger := CtxLoggerFromReq(r)
+	articleId := StringFromReq(r, CtxKeyId)
+
+	types := app.Conf.ArticleIndexTypes
+	search := app.Elastic.Client.Search(app.Conf.ArticleIndex.Name)
+	search.Type(types.Draft, types.Version, types.Publish)
+	search.Query(elastic.NewConstantScoreQuery(elastic.NewTermQuery("guid", articleId)))
+	search.FetchSource(true)
+	resp, err := search.Do(context.Background())
+	if err != nil {
+		body := fmt.Sprintf("failed to query elasticsearch, error: %v", err)
+		logger.Perror(body)
+		return CreateInternalServerErrorRespData(body)
+	}
+	if resp.Hits.TotalHits <= 0 {
+		body := fmt.Sprintf("Article %v is not found!", articleId)
+		return CreateNotFoundRespData(body)
+	}
+	article := &CmsArticle{
+		Versions: make([]*Article, 0),
+	}
+	for _, hit := range resp.Hits.Hits {
+		var a *Article
+		var err error
+		if hit.Type == types.Draft {
+			if a, err = unmarshalArticle(*hit.Source); err == nil {
+				article.Draft = a
+			}
+		} else if hit.Type == types.Version {
+			if a, err = unmarshalArticle(*hit.Source); err == nil {
+				article.Versions = append(article.Versions, a)
+			}
+		} else if hit.Type == types.Publish {
+			if a, err = unmarshalArticle(*hit.Source); err == nil {
+				article.Publish = a
+			}
+		} else {
+			logger.Pwarnf("unknown type %v in article index.", hit.Type)
+		}
+	}
+	if len(article.Versions) > 0 {
+		sort.Stable(article.Versions)
+	}
+	return CreateJsonRespData(http.StatusOK, article)
+}
+
 func ArticleCreate() EndpointHandler {
 	h := addArticleAuditLogFields("create", createArticle)
 	h = RequireOneRole(CmsRoleArticleCreate, h)
@@ -767,5 +827,10 @@ func ArticleUnpublish() EndpointHandler {
 	h := addArticleAuditLogFields("unpublish", unpublishArticle)
 	h = GetRequiredStringArg("id", CtxKeyId, h)
 	h = RequireOneRole(CmsRoleArticlePublish, h)
+	return RequireAuth(h)
+}
+
+func ArticleGet() EndpointHandler {
+	h := GetRequiredStringArg("id", CtxKeyId, getCmsArticle)
 	return RequireAuth(h)
 }

@@ -15,6 +15,7 @@ import (
 type AuthToken struct {
 	Token  string `json:"token"`
 	Expire string `json:"expire"`
+	Role   uint32 `json:"role"`
 }
 
 func getCmsUser(app *AppRuntime, username string) (*CmsUser, *HttpResponseData) {
@@ -79,7 +80,8 @@ func login(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpRespons
 		expire := time.Now().UTC().Add(app.Conf.SCookieMaxAge).Add(-1 * time.Minute)
 		return CreateJsonRespData(http.StatusOK, &AuthToken{
 			Token:  token,
-			Expire: expire.Format("2006-01-02T15:04:05.000Z"),
+			Expire: expire.Format("2006-01-02T15:04:05"),
+			Role:   uint32(user.Role),
 		})
 	} else {
 		body := fmt.Sprintf("failed to encode user, error: %v", err)

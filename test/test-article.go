@@ -129,7 +129,7 @@ type ArticleTestCase struct {
 
 func (c *ArticleTestCase) Uri() string {
 	buf := &bytes.Buffer{}
-	fmt.Fprintf(buf, "/article/%s", c.Action)
+	fmt.Fprintf(buf, "/api/article/%s", c.Action)
 	if !c.noIdInUri {
 		id := c.Article.IdFor(c.Action)
 		if len(id) > 0 {

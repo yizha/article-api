@@ -185,6 +185,7 @@ func handler(app *AppRuntime, method string, h EndpointHandler) http.Handler {
 		} else {
 			d = h(app, ww, wr)
 		}
+		d.Header.Set("Access-Control-Allow-Origin", "http://localhost:8000")
 		if err := d.Write(ww); err != nil {
 			CtxLoggerFromReq(wr).Perror(err)
 		}
@@ -200,21 +201,24 @@ func registerHandlers(app *AppRuntime) *http.ServeMux {
 	mux.Handle("/keepalive", handler(app, http.MethodGet, Keepalive))
 
 	// login
-	mux.Handle("/login", handler(app, http.MethodGet, Login()))
-	mux.Handle("/login/create", handler(app, http.MethodGet, LoginCreate()))
-	mux.Handle("/login/update", handler(app, http.MethodGet, LoginUpdate()))
-	mux.Handle("/login/delete", handler(app, http.MethodGet, LoginDelete()))
+	mux.Handle("/api/login", handler(app, http.MethodGet, Login()))
+	mux.Handle("/api/login/create", handler(app, http.MethodGet, LoginCreate()))
+	mux.Handle("/api/login/update", handler(app, http.MethodGet, LoginUpdate()))
+	mux.Handle("/api/login/delete", handler(app, http.MethodGet, LoginDelete()))
 
-	// article endpoints
-	mux.Handle("/article/create", handler(app, http.MethodGet, ArticleCreate()))
-	mux.Handle("/article/edit", handler(app, http.MethodGet, ArticleEdit()))
-	mux.Handle("/article/save", handler(app, http.MethodPost, ArticleSave()))
-	mux.Handle("/article/submit-self", handler(app, http.MethodPost, ArticleSubmitSelf()))
-	mux.Handle("/article/discard-self", handler(app, http.MethodGet, ArticleDiscardSelf()))
-	mux.Handle("/article/submit-other", handler(app, http.MethodGet, ArticleSubmitOther()))
-	mux.Handle("/article/discard-other", handler(app, http.MethodGet, ArticleDiscardOther()))
-	mux.Handle("/article/publish", handler(app, http.MethodGet, ArticlePublish()))
-	mux.Handle("/article/unpublish", handler(app, http.MethodGet, ArticleUnpublish()))
+	// article update endpoints
+	mux.Handle("/api/article/create", handler(app, http.MethodGet, ArticleCreate()))
+	mux.Handle("/api/article/edit", handler(app, http.MethodGet, ArticleEdit()))
+	mux.Handle("/api/article/save", handler(app, http.MethodPost, ArticleSave()))
+	mux.Handle("/api/article/submit-self", handler(app, http.MethodPost, ArticleSubmitSelf()))
+	mux.Handle("/api/article/discard-self", handler(app, http.MethodGet, ArticleDiscardSelf()))
+	mux.Handle("/api/article/submit-other", handler(app, http.MethodGet, ArticleSubmitOther()))
+	mux.Handle("/api/article/discard-other", handler(app, http.MethodGet, ArticleDiscardOther()))
+	mux.Handle("/api/article/publish", handler(app, http.MethodGet, ArticlePublish()))
+	mux.Handle("/api/article/unpublish", handler(app, http.MethodGet, ArticleUnpublish()))
+
+	// article get endpoints
+	mux.Handle("/api/article", handler(app, http.MethodGet, ArticleGet()))
 
 	return mux
 }

@@ -13,7 +13,7 @@ import (
 
 const TokenCookieName = "token"
 
-type CmsRole uint64
+type CmsRole uint32
 
 const (
 
