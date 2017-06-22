@@ -80,7 +80,7 @@ func login(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpRespons
 		expire := time.Now().UTC().Add(app.Conf.SCookieMaxAge).Add(-1 * time.Minute)
 		return CreateJsonRespData(http.StatusOK, &AuthToken{
 			Token:  token,
-			Expire: expire.Format("2006-01-02T15:04:05"),
+			Expire: expire.Format("2006-01-02T15:04:05.000Z"),
 			Role:   uint32(user.Role),
 		})
 	} else {
