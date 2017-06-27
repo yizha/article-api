@@ -201,10 +201,12 @@ func registerHandlers(app *AppRuntime) *http.ServeMux {
 	mux.Handle("/keepalive", handler(app, http.MethodGet, Keepalive))
 
 	// login
+	mux.Handle("/api/manage/login", handler(app, http.MethodGet, LoginManageLogin()))
 	mux.Handle("/api/login", handler(app, http.MethodGet, Login()))
 	mux.Handle("/api/login/create", handler(app, http.MethodGet, LoginCreate()))
 	mux.Handle("/api/login/update", handler(app, http.MethodGet, LoginUpdate()))
 	mux.Handle("/api/login/delete", handler(app, http.MethodGet, LoginDelete()))
+	mux.Handle("/api/login/roles", handler(app, http.MethodGet, LoginRoles()))
 
 	// article update endpoints
 	mux.Handle("/api/article/create", handler(app, http.MethodGet, ArticleCreate()))

@@ -13,26 +13,31 @@ import (
 
 const TokenCookieName = "token"
 
-type CmsRole uint32
+type CmsRole struct {
+	Name  string `json:"name,omitempty"`
+	Value uint32 `json:"value,omitempty"`
+}
+
+type CmsRoleValue uint32
 
 const (
 
 	// create article
 	// implies save/submit/discard draft article created by self
-	CmsRoleArticleCreate CmsRole = 1 << 0
+	CmsRoleArticleCreate CmsRoleValue = 1 << 0
 
 	// edit article
 	// implies save/submit/discard draft article created by self
-	CmsRoleArticleEdit CmsRole = 1 << 1
+	CmsRoleArticleEdit CmsRoleValue = 1 << 1
 
 	// submit/discard draft article created by others
-	CmsRoleArticleSubmit CmsRole = 1 << 2
+	CmsRoleArticleSubmit CmsRoleValue = 1 << 2
 
 	// publish/unpublish article
-	CmsRoleArticlePublish CmsRole = 1 << 3
+	CmsRoleArticlePublish CmsRoleValue = 1 << 3
 
 	// create/update/delete login
-	CmsRoleLoginManage CmsRole = 1 << 20
+	CmsRoleLoginManage CmsRoleValue = 1 << 20
 
 	CmsRoleArticleCreateName  = "article:create"
 	CmsRoleArticleEditName    = "article:edit"
@@ -42,28 +47,37 @@ const (
 )
 
 var (
-	CmsRoleId2Name map[CmsRole]string
-	CmsRoleName2Id map[string]CmsRole
+	CmsRoleValue2Name map[CmsRoleValue]string
+	CmsRoleName2Value map[string]CmsRoleValue
+	CmsRoles          []*CmsRole
 )
 
 func init() {
-	CmsRoleId2Name = map[CmsRole]string{
+	CmsRoleValue2Name = map[CmsRoleValue]string{
 		CmsRoleArticleCreate:  CmsRoleArticleCreateName,
 		CmsRoleArticleEdit:    CmsRoleArticleEditName,
 		CmsRoleArticleSubmit:  CmsRoleArticleSubmitName,
 		CmsRoleArticlePublish: CmsRoleArticlePublishName,
 		CmsRoleLoginManage:    CmsRoleLoginManageName,
 	}
-	CmsRoleName2Id = make(map[string]CmsRole)
-	for id, name := range CmsRoleId2Name {
-		CmsRoleName2Id[name] = id
+	CmsRoles = make([]*CmsRole, len(CmsRoleValue2Name))
+	CmsRoleName2Value = make(map[string]CmsRoleValue)
+	i := 0
+	for id, name := range CmsRoleValue2Name {
+		CmsRoleName2Value[name] = id
+		CmsRoles[i] = &CmsRole{
+			Name:  name,
+			Value: uint32(id),
+		}
+		i += 1
 	}
+
 }
 
-func (r *CmsRole) MarshalJSON() ([]byte, error) {
+func (r *CmsRoleValue) MarshalJSON() ([]byte, error) {
 	roles := make([]string, 0)
 	if *r > 0 {
-		for id, name := range CmsRoleId2Name {
+		for id, name := range CmsRoleValue2Name {
 			if *r&id == id {
 				roles = append(roles, name)
 			}
@@ -72,7 +86,7 @@ func (r *CmsRole) MarshalJSON() ([]byte, error) {
 	return json.Marshal(roles)
 }
 
-func (r *CmsRole) UnmarshalJSON(data []byte) error {
+func (r *CmsRoleValue) UnmarshalJSON(data []byte) error {
 	roles := make([]string, 0)
 	if err := json.Unmarshal(data, &roles); err != nil {
 		return err
@@ -80,7 +94,7 @@ func (r *CmsRole) UnmarshalJSON(data []byte) error {
 	*r = 0
 	if roles != nil && len(roles) > 0 {
 		for _, name := range roles {
-			if id, ok := CmsRoleName2Id[name]; ok {
+			if id, ok := CmsRoleName2Value[name]; ok {
 				*r = *r | id
 			} else {
 				fmt.Fprintf(os.Stderr, "ignore unknown cms user role name %v!", name)
@@ -91,9 +105,9 @@ func (r *CmsRole) UnmarshalJSON(data []byte) error {
 }
 
 type CmsUser struct {
-	Username string  `json:"username,omitempty"`
-	Password string  `json:"password,omitempty"`
-	Role     CmsRole `json:"role"`
+	Username string       `json:"username,omitempty"`
+	Password string       `json:"password,omitempty"`
+	Role     CmsRoleValue `json:"role"`
 }
 
 func (u *CmsUser) String() string {
@@ -120,11 +134,11 @@ func HashPassword(pass string) (string, error) {
 	return base64.StdEncoding.EncodeToString(bytes), nil
 }
 
-func Names2Role(s string) CmsRole {
-	var role CmsRole = 0
+func Names2Role(s string) CmsRoleValue {
+	var role CmsRoleValue = 0
 	if len(s) > 0 {
 		for _, name := range strings.Split(s, ",") {
-			if id, ok := CmsRoleName2Id[name]; ok {
+			if id, ok := CmsRoleName2Value[name]; ok {
 				role = role | id
 			}
 		}
@@ -132,10 +146,10 @@ func Names2Role(s string) CmsRole {
 	return role
 }
 
-func Role2Names(role CmsRole) []string {
+func Role2Names(role CmsRoleValue) []string {
 	names := make([]string, 0)
 	if role > 0 {
-		for id, name := range CmsRoleId2Name {
+		for id, name := range CmsRoleValue2Name {
 			if role&id == id {
 				names = append(names, name)
 			}

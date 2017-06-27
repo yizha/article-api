@@ -160,15 +160,22 @@ func (g *LoginTestCaseGroup) GetTestCases() ([]TestCase, error) {
 	cases = append(cases, loginCase(loginUri("/login", "", "", ""), nil, 400))
 	cases = append(cases, loginCase(loginUri("/login", "xyz", "", ""), nil, 400))
 	cases = append(cases, loginCase(loginUri("/login", "", "xyz", ""), nil, 400))
+	cases = append(cases, loginCase(loginUri("/manage/login", "", "", ""), nil, 400))
+	cases = append(cases, loginCase(loginUri("/manage/login", "xyz", "", ""), nil, 400))
+	cases = append(cases, loginCase(loginUri("/manage/login", "", "xyz", ""), nil, 400))
 
 	// no such user
 	cases = append(cases, loginCase(loginUri("/login", "xyz", "xyz", ""), nil, 403))
+	cases = append(cases, loginCase(loginUri("/manage/login", "xyz", "xyz", ""), nil, 403))
 
 	// wrong password
 	cases = append(cases, loginCase(loginUri("/login", g.rootUserName, "xyz", ""), nil, 403))
+	cases = append(cases, loginCase(loginUri("/manage/login", g.rootUserName, "xyz", ""), nil, 403))
 
 	// good
 	cases = append(cases, loginCase(loginUri("/login", g.rootUserName, g.rootUserPass, ""), nil, 200))
+	cases = append(cases, loginCase(loginUri("/manage/login", g.rootUserName, g.rootUserPass, ""), nil, 200))
+	cases = append(cases, loginCase(loginUri("/login/roles", "", "", ""), rootToken, 200))
 
 	// no token
 	cases = append(cases, loginCase(loginUri("/login/create", "", "", ""), nil, 403))
@@ -190,17 +197,19 @@ func (g *LoginTestCaseGroup) GetTestCases() ([]TestCase, error) {
 	cases = append(cases, loginCase(loginUri("/login/create", g.nonMgrUserName, g.nonMgrUserPass, ""), rootToken, 409))
 
 	// non mgr user cannot manage login
+	cases = append(cases, loginCase(loginUri("/manage/login", g.nonMgrUserName, g.nonMgrUserPass, ""), nonMgrToken, 403))
 	cases = append(cases, loginCase(loginUri("/login/create", g.nonMgrUserName, g.nonMgrUserPass, ""), nonMgrToken, 403))
 	cases = append(cases, loginCase(loginUri("/login/update", g.nonMgrUserName, g.nonMgrUserPass, ""), nonMgrToken, 403))
-	cases = append(cases, loginCase(loginUri("/login/delete", g.nonMgrUserName, g.nonMgrUserPass, ""), nonMgrToken, 403))
+	cases = append(cases, loginCase(loginUri("/login/delete", g.nonMgrUserName, "", ""), nonMgrToken, 403))
+	cases = append(cases, loginCase(loginUri("/login/roles", "", "", ""), nonMgrToken, 403))
 
 	// create a manage user
 	cases = append(cases, loginCase(loginUri("/login/create", g.mgrUserName, g.mgrUserPass, "login:manage"), rootToken, 200))
 
-	// update self
+	// update another user's password and role
 	cases = append(cases, loginCase(loginUri("/login/update", g.nonMgrUserName, "newpass", "login:manage"), mgrToken, 200))
 
-	// update another user's password and role
+	// updated user can login with the new/updated password
 	cases = append(cases, loginCase(loginUri("/login", g.nonMgrUserName, "newpass", ""), nil, 200))
 
 	// updated user (who now has manage role) still cannot delete self with old token

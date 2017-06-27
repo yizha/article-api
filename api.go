@@ -54,7 +54,7 @@ func RequireAuth(h EndpointHandler) EndpointHandler {
 	}
 }
 
-func RequireAllRoles(role CmsRole, h EndpointHandler) EndpointHandler {
+func RequireAllRoles(role CmsRoleValue, h EndpointHandler) EndpointHandler {
 	return func(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
 		user := CmsUserFromReq(r)
 		if user.Role&role == role {
@@ -68,7 +68,7 @@ func RequireAllRoles(role CmsRole, h EndpointHandler) EndpointHandler {
 	}
 }
 
-func RequireOneRole(role CmsRole, h EndpointHandler) EndpointHandler {
+func RequireOneRole(role CmsRoleValue, h EndpointHandler) EndpointHandler {
 	return func(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
 		user := CmsUserFromReq(r)
 		if user.Role&role > 0 {

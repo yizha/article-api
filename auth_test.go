@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func testCmsRole(t *testing.T, roleValue CmsRole, roleNames []string) {
+func testCmsRole(t *testing.T, roleValue CmsRoleValue, roleNames []string) {
 
 	user := &CmsUser{
 		Username: "test",

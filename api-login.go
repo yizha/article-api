@@ -28,7 +28,7 @@ func getCmsUser(app *AppRuntime, username string) (*CmsUser, *HttpResponseData) 
 	resp, err := getService.Do(context.Background())
 	if err != nil {
 		if elastic.IsNotFound(err) {
-			return nil, CreateForbiddenRespData("no such user!")
+			return nil, CreateForbiddenRespData("username")
 		} else {
 			body := fmt.Sprintf("failed to query elasticsearch, error: %v", err)
 			return nil, CreateInternalServerErrorRespData(body)
@@ -41,6 +41,55 @@ func getCmsUser(app *AppRuntime, username string) (*CmsUser, *HttpResponseData) 
 			body := fmt.Sprintf("failed to unmarshal cms user, error: %v", err)
 			return nil, CreateInternalServerErrorRespData(body)
 		}
+	}
+}
+
+func manageLogin(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	args := r.URL.Query()
+	username, d := ParseQueryStringValue(args, "username", true, "")
+	if d != nil {
+		return d
+	}
+	password, d := ParseQueryStringValue(args, "password", true, "")
+	if d != nil {
+		return d
+	}
+	user, d := getCmsUser(app, username)
+	if d != nil {
+		return d
+	}
+	if (user.Role & CmsRoleLoginManage) != CmsRoleLoginManage {
+		return CreateForbiddenRespData("role")
+	}
+	logger := CtxLoggerFromReq(r)
+	//fmt.Println(password)
+	//fmt.Println(user.Password)
+	hashedPassword, err := base64.StdEncoding.DecodeString(user.Password)
+	if err != nil {
+		body := fmt.Sprintf("failed to hex decode user password loaded from elasticsearch, error: %v", err)
+		logger.Perror(body)
+		return CreateInternalServerErrorRespData(body)
+	}
+	if err = bcrypt.CompareHashAndPassword(hashedPassword, []byte(password)); err != nil {
+		//fmt.Println(err)
+		logger.Perror(fmt.Sprintf("wrong password: %v", err))
+		return CreateForbiddenRespData("password")
+	}
+	// clean hashed-password as we don't want it to be in the token
+	user.Password = ""
+	if token, err := app.Conf.SCookie.Encode(TokenCookieName, user); err == nil {
+		logger.Pinfof("user %v login successfully.", user.String())
+		// substract one minute as buffer
+		expire := time.Now().UTC().Add(app.Conf.SCookieMaxAge).Add(-1 * time.Minute)
+		return CreateJsonRespData(http.StatusOK, &AuthToken{
+			Token:  token,
+			Expire: expire.Format("2006-01-02T15:04:05.000Z"),
+			Role:   uint32(user.Role),
+		})
+	} else {
+		body := fmt.Sprintf("failed to encode user, error: %v", err)
+		logger.Perror(body)
+		return CreateInternalServerErrorRespData(body)
 	}
 }
 
@@ -70,7 +119,7 @@ func login(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpRespons
 	if err = bcrypt.CompareHashAndPassword(hashedPassword, []byte(password)); err != nil {
 		//fmt.Println(err)
 		logger.Perror(fmt.Sprintf("wrong password: %v", err))
-		return CreateForbiddenRespData("wrong password!")
+		return CreateForbiddenRespData("password")
 	}
 	// clean hashed-password as we don't want it to be in the token
 	user.Password = ""
@@ -155,9 +204,8 @@ func updateLogin(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 	if d != nil {
 		return d
 	}
-	user := make(map[string]interface{})
-	user["username"] = username
 	// password
+	user := make(map[string]interface{})
 	password, d := ParseQueryStringValue(args, "password", false, "")
 	if d != nil {
 		return d
@@ -181,6 +229,14 @@ func updateLogin(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpR
 		// this filters out invalid role names
 		user["role"] = Role2Names(Names2Role(vals[0]))
 	} // else covers case 1
+
+	if len(user) <= 0 {
+		body := fmt.Sprintf("need something (password, role, etc) to update!")
+		logger.Perror(body)
+		return CreateBadRequestRespData(body)
+	}
+
+	logger.Pinfof("updating user %v with %v", username, user)
 
 	updService := app.Elastic.Client.Update()
 	updService.Index(app.Conf.UserIndex.Name)
@@ -234,6 +290,19 @@ func addLoginAuditLogFields(action string, h EndpointHandler) EndpointHandler {
 		CtxLoggerFromReq(r).AddFields(fields)
 		return d
 	}
+}
+
+func roles(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	return CreateJsonRespData(http.StatusOK, CmsRoles)
+}
+
+func LoginRoles() EndpointHandler {
+	h := RequireOneRole(CmsRoleLoginManage, roles)
+	return RequireAuth(h)
+}
+
+func LoginManageLogin() EndpointHandler {
+	return manageLogin
 }
 
 func Login() EndpointHandler {
