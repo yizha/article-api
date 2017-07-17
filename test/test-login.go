@@ -176,6 +176,7 @@ func (g *LoginTestCaseGroup) GetTestCases() ([]TestCase, error) {
 	cases = append(cases, loginCase(loginUri("/login", g.rootUserName, g.rootUserPass, ""), nil, 200))
 	cases = append(cases, loginCase(loginUri("/manage/login", g.rootUserName, g.rootUserPass, ""), nil, 200))
 	cases = append(cases, loginCase(loginUri("/login/roles", "", "", ""), rootToken, 200))
+	cases = append(cases, loginCase(loginUri("/login/users", "", "", ""), rootToken, 200))
 
 	// no token
 	cases = append(cases, loginCase(loginUri("/login/create", "", "", ""), nil, 403))
@@ -202,6 +203,7 @@ func (g *LoginTestCaseGroup) GetTestCases() ([]TestCase, error) {
 	cases = append(cases, loginCase(loginUri("/login/update", g.nonMgrUserName, g.nonMgrUserPass, ""), nonMgrToken, 403))
 	cases = append(cases, loginCase(loginUri("/login/delete", g.nonMgrUserName, "", ""), nonMgrToken, 403))
 	cases = append(cases, loginCase(loginUri("/login/roles", "", "", ""), nonMgrToken, 403))
+	cases = append(cases, loginCase(loginUri("/login/users", "", "", ""), nonMgrToken, 403))
 
 	// create a manage user
 	cases = append(cases, loginCase(loginUri("/login/create", g.mgrUserName, g.mgrUserPass, "login:manage"), rootToken, 200))

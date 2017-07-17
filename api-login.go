@@ -296,6 +296,39 @@ func roles(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpRespons
 	return CreateJsonRespData(http.StatusOK, CmsRoles)
 }
 
+func users(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	logger := CtxLoggerFromReq(r)
+	search := app.Elastic.Client.Search(app.Conf.UserIndex.Name)
+	search.Type(app.Conf.UserIndexTypes.User)
+	search.Query(elastic.NewConstantScoreQuery(elastic.NewMatchAllQuery()))
+	search.FetchSource(true)
+	search.Sort("username", true)
+	resp, err := search.Do(context.Background())
+	if err != nil {
+		body := fmt.Sprintf("failed to get users from index %v, error: %v", app.Conf.UserIndex.Name, err)
+		logger.Perror(body)
+		return CreateInternalServerErrorRespData(body)
+	}
+	users := make([]*CmsUser, 0)
+	if resp.Hits != nil && resp.Hits.Hits != nil && len(resp.Hits.Hits) > 0 {
+		for _, h := range resp.Hits.Hits {
+			one := &CmsUser{}
+			if err := json.Unmarshal(*h.Source, one); err != nil {
+				logger.Pwarnf("failed to decode user %v", h.Id)
+			} else {
+				one.Password = ""
+				users = append(users, one)
+			}
+		}
+	}
+	return CreateJsonRespData(http.StatusOK, users)
+}
+
+func LoginUsers() EndpointHandler {
+	h := RequireOneRole(CmsRoleLoginManage, users)
+	return RequireAuth(h)
+}
+
 func LoginRoles() EndpointHandler {
 	h := RequireOneRole(CmsRoleLoginManage, roles)
 	return RequireAuth(h)
