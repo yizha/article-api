@@ -309,6 +309,7 @@ func users(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpRespons
 		logger.Perror(body)
 		return CreateInternalServerErrorRespData(body)
 	}
+	loginUser := CmsUserFromReq(r)
 	users := make([]*CmsUser, 0)
 	if resp.Hits != nil && resp.Hits.Hits != nil && len(resp.Hits.Hits) > 0 {
 		for _, h := range resp.Hits.Hits {
@@ -317,7 +318,9 @@ func users(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpRespons
 				logger.Pwarnf("failed to decode user %v", h.Id)
 			} else {
 				one.Password = ""
-				users = append(users, one)
+				if one.Username != "void" || loginUser.Username == "void" {
+					users = append(users, one)
+				}
 			}
 		}
 	}
