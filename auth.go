@@ -26,24 +26,29 @@ const (
 	// implies save/submit/discard draft article created by self
 	CmsRoleArticleCreate CmsRoleValue = 1 << 0
 
-	// edit article
+	// edit article created by self
 	// implies save/submit/discard draft article created by self
-	CmsRoleArticleEdit CmsRoleValue = 1 << 1
+	CmsRoleArticleEditSelf CmsRoleValue = 1 << 1
+
+	// edit article created by other
+	// also implies save/submit/discard draft article created by self
+	CmsRoleArticleEditOther CmsRoleValue = 1 << 2
 
 	// submit/discard draft article created by others
-	CmsRoleArticleSubmit CmsRoleValue = 1 << 2
+	CmsRoleArticleSubmit CmsRoleValue = 1 << 3
 
 	// publish/unpublish article
-	CmsRoleArticlePublish CmsRoleValue = 1 << 3
+	CmsRoleArticlePublish CmsRoleValue = 1 << 4
 
 	// create/update/delete login
 	CmsRoleLoginManage CmsRoleValue = 1 << 20
 
-	CmsRoleArticleCreateName  = "article:create"
-	CmsRoleArticleEditName    = "article:edit"
-	CmsRoleArticleSubmitName  = "article:submit"
-	CmsRoleArticlePublishName = "article:publish"
-	CmsRoleLoginManageName    = "login:manage"
+	CmsRoleArticleCreateName    = "article:create"
+	CmsRoleArticleEditSelfName  = "article:edit_self"
+	CmsRoleArticleEditOtherName = "article:edit_other"
+	CmsRoleArticleSubmitName    = "article:submit"
+	CmsRoleArticlePublishName   = "article:publish"
+	CmsRoleLoginManageName      = "login:manage"
 )
 
 var (
@@ -54,11 +59,12 @@ var (
 
 func init() {
 	CmsRoleValue2Name = map[CmsRoleValue]string{
-		CmsRoleArticleCreate:  CmsRoleArticleCreateName,
-		CmsRoleArticleEdit:    CmsRoleArticleEditName,
-		CmsRoleArticleSubmit:  CmsRoleArticleSubmitName,
-		CmsRoleArticlePublish: CmsRoleArticlePublishName,
-		CmsRoleLoginManage:    CmsRoleLoginManageName,
+		CmsRoleArticleCreate:    CmsRoleArticleCreateName,
+		CmsRoleArticleEditSelf:  CmsRoleArticleEditSelfName,
+		CmsRoleArticleEditOther: CmsRoleArticleEditOtherName,
+		CmsRoleArticleSubmit:    CmsRoleArticleSubmitName,
+		CmsRoleArticlePublish:   CmsRoleArticlePublishName,
+		CmsRoleLoginManage:      CmsRoleLoginManageName,
 	}
 	CmsRoles = make([]*CmsRole, len(CmsRoleValue2Name))
 	CmsRoleName2Value = make(map[string]CmsRoleValue)

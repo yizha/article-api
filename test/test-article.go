@@ -16,7 +16,7 @@ import (
 type Article struct {
 	Id          string   `json:"id,omitempty"`
 	Guid        string   `json:"guid,omitempty"`
-	Version     int64    `json:"version,omitempty"`
+	Version     string   `json:"version,omitempty"`
 	Headline    string   `json:"headline,omitempty"`
 	Summary     string   `json:"summary,omitempty"`
 	Content     string   `json:"content,omitempty"`
@@ -26,12 +26,12 @@ type Article struct {
 	CreatedBy   string   `json:"created_by,omitempty"`
 	RevisedAt   string   `json:"revised_at,omitempty"`
 	RevisedBy   string   `json:"revised_by,omitempty"`
-	FromVersion int64    `json:"from_version,omitempty"`
+	FromVersion string   `json:"from_version,omitempty"`
 	LockedBy    string   `json:"locked_by,omitempty"`
 }
 
 func (a *Article) VerGuid() string {
-	return fmt.Sprintf("%s:%d", a.Guid, a.Version)
+	return fmt.Sprintf("%s:%s", a.Guid, a.Version)
 }
 
 func (a *Article) IdFor(action string) string {
@@ -184,9 +184,9 @@ func (c *ArticleTestCase) Verify() error {
 			return fmt.Errorf("couldn't find article version %s", c.Article.VerGuid())
 		} else {
 			//fmt.Printf("\narticle from es: %+v\n", a)
-			if c.Article.FromVersion == 0 { // first version
-				if a.RevisedBy != "" {
-					return fmt.Errorf("first version article has revised_by=%s", a.RevisedBy)
+			if c.Article.FromVersion == "0" { // first version
+				if a.RevisedBy != a.CreatedBy {
+					return fmt.Errorf("first version article has revised_by=%s but created_by=%s", a.RevisedBy, a.CreatedBy)
 				} else if a.CreatedBy != c.User.Username {
 					return fmt.Errorf("expecting created_by=%s, but got %s", c.User.Username, a.CreatedBy)
 				}
@@ -218,9 +218,9 @@ func (c *ArticleTestCase) Verify() error {
 		} else if a == nil {
 			return fmt.Errorf("couldn't find article version %s", c.Article.VerGuid())
 		} else {
-			if c.Article.FromVersion == 0 { // first version
-				if a.RevisedBy != "" {
-					return fmt.Errorf("first version article has revised_by=%s", a.RevisedBy)
+			if c.Article.FromVersion == "0" { // first version
+				if a.RevisedBy != a.CreatedBy {
+					return fmt.Errorf("first version article has revised_by=%s but created_by=%s", a.RevisedBy, a.CreatedBy)
 				} else if a.CreatedBy != c.User.Username {
 					return fmt.Errorf("expecting created_by=%s, but got %s", c.User.Username, a.CreatedBy)
 				}
@@ -316,20 +316,21 @@ type UserToken struct {
 }
 
 type ArticleTestCaseGroup struct {
-	desc         string
-	host         string
-	hclient      *http.Client
-	esclient     *elastic.Client
-	stopOnNG     bool
-	userIndex    string
-	userType     string
-	articleIndex string
-	articleTypes *ArticleTypes
-	createUser   *UserToken
-	editUser     *UserToken
-	submitUser   *UserToken
-	publishUser  *UserToken
-	godUser      *UserToken
+	desc          string
+	host          string
+	hclient       *http.Client
+	esclient      *elastic.Client
+	stopOnNG      bool
+	userIndex     string
+	userType      string
+	articleIndex  string
+	articleTypes  *ArticleTypes
+	createUser    *UserToken
+	editSelfUser  *UserToken
+	editOtherUser *UserToken
+	submitUser    *UserToken
+	publishUser   *UserToken
+	godUser       *UserToken
 }
 
 func (g *ArticleTestCaseGroup) Desc() string {
@@ -346,7 +347,7 @@ func (g *ArticleTestCaseGroup) Setup() error {
 		return err
 	}
 	// create users then get token
-	for _, u := range []*UserToken{g.createUser, g.editUser, g.submitUser, g.publishUser, g.godUser} {
+	for _, u := range []*UserToken{g.createUser, g.editSelfUser, g.editOtherUser, g.submitUser, g.publishUser, g.godUser} {
 		//fmt.Println("username:", u.Username, "role:", u.Role)
 		err = CreateUser(g.esclient, g.userIndex, g.userType, u.Username, u.Password, u.Role)
 		if err != nil {
@@ -372,7 +373,7 @@ func (g *ArticleTestCaseGroup) TearDown() error {
 		return fmt.Errorf("failed to delete test articles: %v", err)
 	}
 	// delete users
-	err = DeleteDocs(g.esclient, g.userIndex, "username", g.createUser.Username, g.editUser.Username, g.submitUser.Username, g.publishUser.Username, g.godUser.Username)
+	err = DeleteDocs(g.esclient, g.userIndex, "username", g.createUser.Username, g.editSelfUser.Username, g.editOtherUser.Username, g.submitUser.Username, g.publishUser.Username, g.godUser.Username)
 	if err != nil {
 		return fmt.Errorf("failed to delete test users: %v", err)
 	}
@@ -455,15 +456,15 @@ func (g *ArticleTestCaseGroup) GetTestCases() ([]TestCase, error) {
 	cases = append(cases, testCase("unpublish", a, nil, 403))
 
 	// wrong token
-	cases = append(cases, testCase("create", a, g.editUser, 403))
+	cases = append(cases, testCase("create", a, g.editOtherUser, 403))
 	cases = append(cases, testCase("save", a, g.submitUser, 403))
 	cases = append(cases, testCase("submit-self", a, g.publishUser, 403))
 	cases = append(cases, testCase("discard-self", a, g.publishUser, 403))
-	cases = append(cases, testCase("submit-other", a, g.editUser, 403))
-	cases = append(cases, testCase("discard-other", a, g.editUser, 403))
+	cases = append(cases, testCase("submit-other", a, g.editSelfUser, 403))
+	cases = append(cases, testCase("discard-other", a, g.editSelfUser, 403))
 	cases = append(cases, testCase("edit", a, g.createUser, 403))
-	cases = append(cases, testCase("publish", a, g.editUser, 403))
-	cases = append(cases, testCase("unpublish", a, g.editUser, 403))
+	cases = append(cases, testCase("publish", a, g.editSelfUser, 403))
+	cases = append(cases, testCase("unpublish", a, g.editSelfUser, 403))
 
 	// bad token
 	cases = append(cases, testCase("create", a, userWithBadToken, 403))
@@ -482,9 +483,26 @@ func (g *ArticleTestCaseGroup) GetTestCases() ([]TestCase, error) {
 	cases = append(cases, noArticleIdTestCase("discard-self", a, g.createUser, 400))
 	cases = append(cases, noArticleIdTestCase("submit-other", a, g.submitUser, 400))
 	cases = append(cases, noArticleIdTestCase("discard-other", a, g.submitUser, 400))
-	cases = append(cases, noArticleIdTestCase("edit", a, g.editUser, 400))
+	cases = append(cases, noArticleIdTestCase("edit", a, g.editSelfUser, 400))
 	cases = append(cases, noArticleIdTestCase("publish", a, g.publishUser, 400))
 	cases = append(cases, noArticleIdTestCase("unpublish", a, g.publishUser, 400))
+
+	// create --> save --> submit-self --> edit-self (another user)
+	a = &Article{}
+	cases = append(cases, testCase("create", a, g.createUser, 200))
+	cases = append(cases, testCase("save", a, g.createUser, 200))
+	cases = append(cases, testCase("submit-self", a, g.createUser, 200))
+	cases = append(cases, testCase("edit", a, g.editSelfUser, 403))
+
+	// create --> save --> submit-self --> edit-other (another user) --> submit-self --> publish --> unpublish
+	a = &Article{}
+	cases = append(cases, testCase("create", a, g.createUser, 200))
+	cases = append(cases, testCase("save", a, g.createUser, 200))
+	cases = append(cases, testCase("submit-self", a, g.createUser, 200))
+	cases = append(cases, testCase("edit", a, g.editOtherUser, 200))
+	cases = append(cases, testCase("submit-self", a, g.editOtherUser, 200))
+	cases = append(cases, testCase("publish", a, g.publishUser, 200))
+	cases = append(cases, testCase("unpublish", a, g.publishUser, 200))
 
 	// create --> save --> submit-self --> publish --> unpublish
 	a = &Article{}
@@ -502,22 +520,22 @@ func (g *ArticleTestCaseGroup) GetTestCases() ([]TestCase, error) {
 	cases = append(cases, testCase("publish", a, g.publishUser, 200))
 	cases = append(cases, testCase("unpublish", a, g.publishUser, 200))
 
-	// create --> save --> submit-self --> edit --> submit-self --> publish --> unpublish
+	// create --> save --> submit-self --> edit-self --> submit-self --> publish --> unpublish
 	a = &Article{}
-	cases = append(cases, testCase("create", a, g.createUser, 200))
-	cases = append(cases, testCase("save", a, g.createUser, 200))
-	cases = append(cases, testCase("submit-self", a, g.createUser, 200))
-	cases = append(cases, testCase("edit", a, g.editUser, 200))
-	cases = append(cases, testCase("submit-self", a, g.editUser, 200))
+	cases = append(cases, testCase("create", a, g.editSelfUser, 200))
+	cases = append(cases, testCase("save", a, g.editSelfUser, 200))
+	cases = append(cases, testCase("submit-self", a, g.editSelfUser, 200))
+	cases = append(cases, testCase("edit", a, g.editSelfUser, 200))
+	cases = append(cases, testCase("submit-self", a, g.editSelfUser, 200))
 	cases = append(cases, testCase("publish", a, g.publishUser, 200))
 	cases = append(cases, testCase("unpublish", a, g.publishUser, 200))
 
-	// create --> save --> submit-self --> edit --> submit-other --> publish --> unpublish
+	// create --> save --> submit-self --> edit-self --> submit-other --> publish --> unpublish
 	a = &Article{}
-	cases = append(cases, testCase("create", a, g.createUser, 200))
-	cases = append(cases, testCase("save", a, g.createUser, 200))
-	cases = append(cases, testCase("submit-self", a, g.createUser, 200))
-	cases = append(cases, testCase("edit", a, g.editUser, 200))
+	cases = append(cases, testCase("create", a, g.editSelfUser, 200))
+	cases = append(cases, testCase("save", a, g.editSelfUser, 200))
+	cases = append(cases, testCase("submit-self", a, g.editSelfUser, 200))
+	cases = append(cases, testCase("edit", a, g.editSelfUser, 200))
 	cases = append(cases, testCase("submit-other", a, g.submitUser, 200))
 	cases = append(cases, testCase("publish", a, g.publishUser, 200))
 	cases = append(cases, testCase("unpublish", a, g.publishUser, 200))
@@ -534,20 +552,20 @@ func (g *ArticleTestCaseGroup) GetTestCases() ([]TestCase, error) {
 	cases = append(cases, testCase("save", a, g.createUser, 200))
 	cases = append(cases, testCase("discard-other", a, g.submitUser, 200))
 
-	// create --> save --> submit-self --> edit --> discard-self
+	// create --> save --> submit-self --> edit-self --> discard-self
 	a = &Article{}
-	cases = append(cases, testCase("create", a, g.createUser, 200))
-	cases = append(cases, testCase("save", a, g.createUser, 200))
-	cases = append(cases, testCase("submit-self", a, g.createUser, 200))
-	cases = append(cases, testCase("edit", a, g.editUser, 200))
-	cases = append(cases, testCase("discard-self", a, g.editUser, 200))
+	cases = append(cases, testCase("create", a, g.editSelfUser, 200))
+	cases = append(cases, testCase("save", a, g.editSelfUser, 200))
+	cases = append(cases, testCase("submit-self", a, g.editSelfUser, 200))
+	cases = append(cases, testCase("edit", a, g.editSelfUser, 200))
+	cases = append(cases, testCase("discard-self", a, g.editSelfUser, 200))
 
-	// create --> save --> submit-self --> edit --> discard-other
+	// create --> save --> submit-self --> edit-self --> discard-other
 	a = &Article{}
-	cases = append(cases, testCase("create", a, g.createUser, 200))
-	cases = append(cases, testCase("save", a, g.createUser, 200))
-	cases = append(cases, testCase("submit-self", a, g.createUser, 200))
-	cases = append(cases, testCase("edit", a, g.editUser, 200))
+	cases = append(cases, testCase("create", a, g.editSelfUser, 200))
+	cases = append(cases, testCase("save", a, g.editSelfUser, 200))
+	cases = append(cases, testCase("submit-self", a, g.editSelfUser, 200))
+	cases = append(cases, testCase("edit", a, g.editSelfUser, 200))
 	cases = append(cases, testCase("discard-other", a, g.submitUser, 200))
 
 	// create --> discard-self
@@ -606,10 +624,11 @@ func GetArticleTests(host string, hclient *http.Client, esclient *elastic.Client
 			Version: "version",
 			Publish: "publish",
 		},
-		createUser:  &UserToken{"_test_user_create", "000", []string{"article:create"}, ""},
-		editUser:    &UserToken{"_test_user_edit", "123", []string{"article:edit"}, ""},
-		submitUser:  &UserToken{"_test_user_submit", "456", []string{"article:submit"}, ""},
-		publishUser: &UserToken{"_test_user_publish", "789", []string{"article:publish"}, ""},
-		godUser:     &UserToken{"_test_user_god", "666", []string{"article:create", "article:edit", "article:submit", "article:publish"}, ""},
+		createUser:    &UserToken{"_test_user_create", "000", []string{"article:create"}, ""},
+		editSelfUser:  &UserToken{"_test_user_edit_self", "123-0", []string{"article:create", "article:edit_self"}, ""},
+		editOtherUser: &UserToken{"_test_user_edit_other", "123-1", []string{"article:edit_other"}, ""},
+		submitUser:    &UserToken{"_test_user_submit", "456", []string{"article:submit"}, ""},
+		publishUser:   &UserToken{"_test_user_publish", "789", []string{"article:publish"}, ""},
+		godUser:       &UserToken{"_test_user_god", "666", []string{"article:create", "article:edit_self", "article:edit_other", "article:submit", "article:publish"}, ""},
 	}
 }
