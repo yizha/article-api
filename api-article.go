@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -715,14 +716,146 @@ func unpublishArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *
 
 type ArticleVersions []*Article
 
-func (v ArticleVersions) Len() int           { return len(v) }
-func (v ArticleVersions) Swap(i, j int)      { v[i], v[j] = v[j], v[i] }
+func (v ArticleVersions) Len() int      { return len(v) }
+func (v ArticleVersions) Swap(i, j int) { v[i], v[j] = v[j], v[i] }
+
+// should convert version to int64 then compare but it is okay to compare strings directly
 func (v ArticleVersions) Less(i, j int) bool { return v[i].Version < v[j].Version }
 
 type CmsArticle struct {
-	Draft    *Article        `json:"draft,omitempty"`
-	Versions ArticleVersions `json:"versions,omitempty"`
-	Publish  *Article        `json:"publish,omitempty"`
+	Guid      string          `json:"guid"`
+	CreatedAt *JSONTime       `json:"created_at"`
+	Draft     *Article        `json:"draft,omitempty"`
+	Versions  ArticleVersions `json:"versions,omitempty"`
+	Publish   *Article        `json:"publish,omitempty"`
+}
+
+type CmsArticles []*CmsArticle
+
+func (v CmsArticles) Len() int           { return len(v) }
+func (v CmsArticles) Swap(i, j int)      { v[i], v[j] = v[j], v[i] }
+func (v CmsArticles) Less(i, j int) bool { return v[i].CreatedAt.T.After(v[j].CreatedAt.T) }
+
+func getSearchTypesFromQueryString(values url.Values, validTypes map[string]bool) []string {
+	input, ok := values["type"]
+	if !ok || len(input) <= 0 { // no "type", default to all valid types
+		types := make([]string, 0, len(validTypes))
+		for t, _ := range validTypes {
+			types = append(types, t)
+		}
+		return types
+	}
+	types := make([]string, 0, len(validTypes))
+	for _, t := range strings.Split(input[0], ",") {
+		t = strings.ToLower(strings.TrimSpace(t))
+		if _, ok := validTypes[t]; ok {
+			types = append(types, t)
+		}
+	}
+	return types
+}
+
+type CmsArticlesResponseBody struct {
+	Articles   CmsArticles `json:"articles"`
+	CursorMark string      `json:"cursor_mark"`
+}
+
+func getCmsArticles(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
+	logger := CtxLoggerFromReq(r)
+	q := r.URL.Query()
+	inputTypes := getSearchTypesFromQueryString(q, app.Conf.ArticleIndexTypeMap)
+	if len(inputTypes) <= 0 {
+		return CreateJsonRespData(http.StatusOK, &CmsArticlesResponseBody{
+			Articles:   make([]*CmsArticle, 0),
+			CursorMark: "",
+		})
+	}
+	searchAfter, d := DecodeCursorMark(q)
+	if d != nil {
+		return d
+	}
+	search := app.Elastic.Client.Search(app.Conf.ArticleIndex.Name)
+	search.Type(inputTypes...)
+	search.Query(elastic.NewConstantScoreQuery(elastic.NewMatchAllQuery()))
+	search.FetchSource(true)
+	search.SortBy(
+		elastic.NewFieldSort("created_at").Desc().UnmappedType("date"),
+		elastic.NewFieldSort("_uid"),
+	)
+	if searchAfter != nil {
+		search.SearchAfter(searchAfter...)
+	}
+	resp, err := search.Do(context.Background())
+	if err != nil {
+		body := fmt.Sprintf("failed to query elasticsearch, error: %v", err)
+		logger.Perror(body)
+		return CreateInternalServerErrorRespData(body)
+	}
+	if resp.Hits.TotalHits <= 0 {
+		return CreateJsonRespData(http.StatusOK, &CmsArticlesResponseBody{
+			Articles:   make([]*CmsArticle, 0),
+			CursorMark: "",
+		})
+	}
+	types := app.Conf.ArticleIndexTypes
+	articleMap := make(map[string]*CmsArticle)
+	var lastSort []interface{}
+	for _, hit := range resp.Hits.Hits {
+		one, err := unmarshalArticle(*hit.Source)
+		if err != nil {
+			logger.Pwarnf("failed to unmarshal article (%v): %v, error: %v", hit.Type, string(*hit.Source), err)
+			continue
+		}
+		var a *CmsArticle
+		var ok bool
+		if a, ok = articleMap[one.Guid]; !ok {
+			a = &CmsArticle{
+				Guid:      a.Guid,
+				CreatedAt: a.CreatedAt,
+				Versions:  make([]*Article, 0),
+			}
+			articleMap[a.Guid] = a
+		}
+		if hit.Type == types.Draft {
+			a.Draft = one
+		} else if hit.Type == types.Version {
+			a.Versions = append(a.Versions, one)
+		} else if hit.Type == types.Publish {
+			a.Publish = one
+		} else { // should not happen
+			logger.Pwarnf("unknown type %v in article index.", hit.Type)
+		}
+		lastSort = hit.Sort
+	}
+	var articles CmsArticles = make([]*CmsArticle, 0, len(articleMap))
+	for _, a := range articleMap {
+		if len(a.Versions) > 0 {
+			sort.Stable(a.Versions)
+		}
+		articles = append(articles, a)
+	}
+	if len(articles) > 0 {
+		cursorMark, err := EncodeCursorMark(lastSort)
+		if err != nil {
+			return &HttpResponseData{
+				Status: http.StatusInternalServerError,
+				Header: map[string][]string{
+					"Content-Type": []string{"text/plain"},
+				},
+				Body: strings.NewReader(fmt.Sprintf("failed to encode sort %v, error: %v!", lastSort, err)),
+			}
+		}
+		sort.Stable(articles)
+		return CreateJsonRespData(http.StatusOK, &CmsArticlesResponseBody{
+			Articles:   articles,
+			CursorMark: cursorMark,
+		})
+	} else {
+		return CreateJsonRespData(http.StatusOK, &CmsArticlesResponseBody{
+			Articles:   make([]*CmsArticle, 0),
+			CursorMark: "",
+		})
+	}
 }
 
 func getCmsArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
@@ -753,14 +886,26 @@ func getCmsArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Htt
 		if hit.Type == types.Draft {
 			if a, err = unmarshalArticle(*hit.Source); err == nil {
 				article.Draft = a
+				article.Guid = a.Guid
+				article.CreatedAt = a.CreatedAt
+			} else {
+				logger.Pwarnf("failed to unmarshal article draft: %v, error: %v", string(*hit.Source), err)
 			}
 		} else if hit.Type == types.Version {
 			if a, err = unmarshalArticle(*hit.Source); err == nil {
 				article.Versions = append(article.Versions, a)
+				article.Guid = a.Guid
+				article.CreatedAt = a.CreatedAt
+			} else {
+				logger.Pwarnf("failed to unmarshal article version: %v, error: %v", string(*hit.Source), err)
 			}
 		} else if hit.Type == types.Publish {
 			if a, err = unmarshalArticle(*hit.Source); err == nil {
 				article.Publish = a
+				article.Guid = a.Guid
+				article.CreatedAt = a.CreatedAt
+			} else {
+				logger.Pwarnf("failed to unmarshal article publish: %v, error: %v", string(*hit.Source), err)
 			}
 		} else {
 			logger.Pwarnf("unknown type %v in article index.", hit.Type)
@@ -837,4 +982,8 @@ func ArticleUnpublish() EndpointHandler {
 func ArticleGet() EndpointHandler {
 	h := GetRequiredStringArg("id", CtxKeyId, getCmsArticle)
 	return RequireAuth(h)
+}
+
+func ArticlesGet() EndpointHandler {
+	return RequireAuth(getCmsArticles)
 }

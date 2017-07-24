@@ -220,8 +220,9 @@ func registerHandlers(app *AppRuntime) *http.ServeMux {
 	mux.Handle("/api/article/publish", handler(app, http.MethodGet, ArticlePublish()))
 	mux.Handle("/api/article/unpublish", handler(app, http.MethodGet, ArticleUnpublish()))
 
-	// article get endpoints
+	// article(s) get endpoints
 	mux.Handle("/api/article", handler(app, http.MethodGet, ArticleGet()))
+	mux.Handle("/api/articles", handler(app, http.MethodGet, ArticlesGet()))
 
 	return mux
 }

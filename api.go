@@ -241,10 +241,13 @@ func ParseQueryLongValue(
 
 func DecodeCursorMark(data url.Values) ([]interface{}, *HttpResponseData) {
 	s := data.Get("cursorMark")
+	//fmt.Printf("cursorMark: '%v'\n", s)
 	if s == "" {
+		//fmt.Printf("returning nil\n")
 		return nil, nil
 	}
 	if s == "*" {
+		//fmt.Printf("returning nil\n")
 		return nil, nil
 	}
 	bytes, err := base64.URLEncoding.DecodeString(s)
@@ -252,11 +255,13 @@ func DecodeCursorMark(data url.Values) ([]interface{}, *HttpResponseData) {
 		body := fmt.Sprintf("failed to base64-decode cursorMark %v, error: %v!", s, err)
 		return nil, CreateBadRequestRespData(body)
 	}
+	//fmt.Printf("base64 decoded cursor mark: %v\n", string(bytes))
 	r := make([]interface{}, 0)
 	if err := json.Unmarshal(bytes, &r); err != nil {
 		body := fmt.Sprintf("failed to json-decode cursorMark %v, error: %v!", s, err)
 		return nil, CreateBadRequestRespData(body)
 	}
+	//fmt.Printf("json decoded cursor mark: %v\n", r)
 	return r, nil
 }
 

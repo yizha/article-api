@@ -202,7 +202,8 @@ type AppConf struct {
 	ArticleIndex *ESIndex
 
 	// article index types
-	ArticleIndexTypes *ArticleIndexTypes
+	ArticleIndexTypes   *ArticleIndexTypes
+	ArticleIndexTypeMap map[string]bool
 
 	// user index
 	UserIndex *ESIndex
@@ -324,6 +325,12 @@ func ParseArgs(args []string) *AppConf {
 		panic(fmt.Sprintf("server read timeout (%v seconds) is not in allowed range [5, 300].", *serverWriteTimeout))
 	}
 
+	articleIndexTypeMap := map[string]bool{
+		articleIndexTypes.Draft:   true,
+		articleIndexTypes.Version: true,
+		articleIndexTypes.Publish: true,
+	}
+
 	return &AppConf{
 		ServerIP:           *serverIP,
 		ServerPort:         *serverPort,
@@ -335,8 +342,9 @@ func ParseArgs(args []string) *AppConf {
 		SCookie:       scookie,
 		SCookieMaxAge: time.Duration(*authExp) * time.Second,
 
-		ArticleIndex:      &ESIndex{"article", articleIndexDef},
-		ArticleIndexTypes: articleIndexTypes,
+		ArticleIndex:        &ESIndex{"article", articleIndexDef},
+		ArticleIndexTypes:   articleIndexTypes,
+		ArticleIndexTypeMap: articleIndexTypeMap,
 
 		UserIndex:      &ESIndex{"user", userIndexDef},
 		UserIndexTypes: userIndexTypes,
