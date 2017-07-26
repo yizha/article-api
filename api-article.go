@@ -757,7 +757,7 @@ func getSearchTypesFromQueryString(values url.Values, validTypes map[string]bool
 
 type CmsArticlesResponseBody struct {
 	Articles   CmsArticles `json:"articles"`
-	CursorMark string      `json:"cursor_mark"`
+	CursorMark string      `json:"cursor_mark,omitempty"`
 }
 
 func getCmsArticles(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
