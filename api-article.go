@@ -83,18 +83,18 @@ func (t *JSONTime) UnmarshalJSON(data []byte) error {
 
 type Article struct {
 	Id          string    `json:"id,omitempty"`
-	Guid        string    `json:"guid,omitempty"`
+	Guid        string    `json:"guid"`
 	Version     string    `json:"version,omitempty"`
-	Headline    string    `json:"headline,omitempty"`
-	Summary     string    `json:"summary,omitempty"`
-	Content     string    `json:"content,omitempty"`
-	Tag         []string  `json:"tag,omitempty"`
-	Note        string    `json:"note,omitempty"`
-	CreatedAt   *JSONTime `json:"created_at,omitempty"`
-	CreatedBy   string    `json:"created_by,omitempty"`
-	RevisedAt   *JSONTime `json:"revised_at,omitempty"`
-	RevisedBy   string    `json:"revised_by,omitempty"`
-	FromVersion string    `json:"from_version,omitempty"`
+	Headline    string    `json:"headline"`
+	Summary     string    `json:"summary"`
+	Content     string    `json:"content"`
+	Tag         []string  `json:"tag"`
+	Note        string    `json:"note"`
+	CreatedAt   *JSONTime `json:"created_at"`
+	CreatedBy   string    `json:"created_by"`
+	RevisedAt   *JSONTime `json:"revised_at"`
+	RevisedBy   string    `json:"revised_by"`
+	FromVersion string    `json:"from_version"`
 	LockedBy    string    `json:"locked_by,omitempty"`
 }
 
@@ -149,7 +149,7 @@ func getArticle(
 	getService := client.Get()
 	getService.Index(index)
 	getService.Type(typ)
-	getService.Realtime(false)
+	getService.Realtime(true)
 	getService.Id(id)
 	getService.FetchSourceContext(source)
 	resp, err := getService.Do(ctx)
@@ -237,7 +237,17 @@ func addArticleAuditLogFields(action string, h EndpointHandler) EndpointHandler 
 func createArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
 	logger := CtxLoggerFromReq(r)
 	username := CmsUserFromReq(r).Username
+	t := &JSONTime{time.Now().UTC()}
 	article := &Article{
+		Headline:    "",
+		Summary:     "",
+		Content:     "",
+		Tag:         []string{},
+		Note:        "",
+		CreatedBy:   username,
+		CreatedAt:   t,
+		RevisedBy:   username,
+		RevisedAt:   t,
 		LockedBy:    username,
 		FromVersion: "0",
 	}
@@ -254,9 +264,6 @@ func createArticle(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Htt
 		return CreateInternalServerErrorRespData(body)
 	} else {
 		article.Id = resp.Id
-		article.Guid = resp.Id
-		article.CreatedBy = username
-		article.LockedBy = username
 		if bytes, err := json.Marshal(article); err == nil {
 			d := CreateRespData(http.StatusOK, ContentTypeValueJSON, bytes)
 			// save article so that we can log auto-generated article-id
@@ -286,16 +293,21 @@ func saveArticleDraft(app *AppRuntime, user *CmsUser, article *Article, logger *
 		"username":   username,
 		"revised_at": article.RevisedAt,
 	})
-	updService := app.Elastic.Client.Update()
-	updService.Index(app.Conf.ArticleIndex.Name)
-	updService.Type(app.Conf.ArticleIndexTypes.Draft)
-	updService.Id(article.Id)
+	client := app.Elastic.Client
+	index := app.Conf.ArticleIndex.Name
+	typ := app.Conf.ArticleIndexTypes.Draft
+	articleId := article.Id
+	updService := client.Update()
+	updService.Index(index)
+	updService.Type(typ)
+	updService.Id(articleId)
 	updService.Script(script)
 	updService.DetectNoop(true)
 	if waitForRefresh {
 		updService.Refresh("wait_for")
 	}
-	resp, err := updService.Do(context.Background())
+	ctx := context.Background()
+	resp, err := updService.Do(ctx)
 	//fmt.Printf("resp: %T, %+v\n", resp, resp)
 	//fmt.Printf("error: %v\n", err)
 	if err != nil {
@@ -315,7 +327,13 @@ func saveArticleDraft(app *AppRuntime, user *CmsUser, article *Article, logger *
 			return nil, CreateForbiddenRespData(body)
 		} else if resp.Result == "updated" {
 			logger.Pinfof("user %v saved article draft %v", username, article.Id)
-			return article, nil
+			article, d := getFullArticle(client, ctx, index, typ, articleId, logger)
+			fmt.Printf("got full article:\n %+v\n", article)
+			if d != nil {
+				return nil, d
+			} else {
+				return article, nil
+			}
 		} else {
 			body := fmt.Sprintf(`unknown "result" in update response: %v`, resp.Result)
 			logger.Perror(body)
@@ -776,7 +794,7 @@ func getCmsArticles(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Ht
 	}
 	search := app.Elastic.Client.Search(app.Conf.ArticleIndex.Name)
 	search.Type(inputTypes...)
-	search.Query(elastic.NewConstantScoreQuery(elastic.NewMatchAllQuery()))
+	search.Query(elastic.NewConstantScoreQuery(elastic.NewExistsQuery("guid")))
 	search.FetchSource(true)
 	search.SortBy(
 		elastic.NewFieldSort("created_at").Desc().UnmappedType("date"),
@@ -810,8 +828,8 @@ func getCmsArticles(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Ht
 		var ok bool
 		if a, ok = articleMap[one.Guid]; !ok {
 			a = &CmsArticle{
-				Guid:      a.Guid,
-				CreatedAt: a.CreatedAt,
+				Guid:      one.Guid,
+				CreatedAt: one.CreatedAt,
 				Versions:  make([]*Article, 0),
 			}
 			articleMap[a.Guid] = a
