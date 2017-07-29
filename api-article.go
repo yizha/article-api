@@ -824,6 +824,7 @@ func getCmsArticles(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Ht
 			logger.Pwarnf("failed to unmarshal article (%v): %v, error: %v", hit.Type, string(*hit.Source), err)
 			continue
 		}
+		one.Id = hit.Id
 		var a *CmsArticle
 		var ok bool
 		if a, ok = articleMap[one.Guid]; !ok {
