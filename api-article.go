@@ -784,8 +784,7 @@ func getCmsArticles(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Ht
 	inputTypes := getSearchTypesFromQueryString(q, app.Conf.ArticleIndexTypeMap)
 	if len(inputTypes) <= 0 {
 		return CreateJsonRespData(http.StatusOK, &CmsArticlesResponseBody{
-			Articles:   make([]*CmsArticle, 0),
-			CursorMark: "",
+			Articles: make([]*CmsArticle, 0),
 		})
 	}
 	searchAfter, d := DecodeCursorMark(q)
@@ -795,6 +794,7 @@ func getCmsArticles(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Ht
 	search := app.Elastic.Client.Search(app.Conf.ArticleIndex.Name)
 	search.Type(inputTypes...)
 	search.Query(elastic.NewConstantScoreQuery(elastic.NewExistsQuery("guid")))
+	search.Size(10000)
 	search.FetchSource(true)
 	search.SortBy(
 		elastic.NewFieldSort("created_at").Desc().UnmappedType("date"),
@@ -811,8 +811,7 @@ func getCmsArticles(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Ht
 	}
 	if resp.Hits.TotalHits <= 0 {
 		return CreateJsonRespData(http.StatusOK, &CmsArticlesResponseBody{
-			Articles:   make([]*CmsArticle, 0),
-			CursorMark: "",
+			Articles: make([]*CmsArticle, 0),
 		})
 	}
 	types := app.Conf.ArticleIndexTypes
@@ -849,7 +848,7 @@ func getCmsArticles(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Ht
 	var articles CmsArticles = make([]*CmsArticle, 0, len(articleMap))
 	for _, a := range articleMap {
 		if len(a.Versions) > 0 {
-			sort.Stable(a.Versions)
+			sort.Stable(sort.Reverse(a.Versions))
 		}
 		articles = append(articles, a)
 	}
@@ -871,8 +870,7 @@ func getCmsArticles(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Ht
 		})
 	} else {
 		return CreateJsonRespData(http.StatusOK, &CmsArticlesResponseBody{
-			Articles:   make([]*CmsArticle, 0),
-			CursorMark: "",
+			Articles: make([]*CmsArticle, 0),
 		})
 	}
 }
