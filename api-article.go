@@ -773,18 +773,29 @@ func getSearchTypesFromQueryString(values url.Values, validTypes map[string]bool
 	return types
 }
 
+func getBeforeTime(values url.Values) time.Time {
+	if t, err := time.Parse("2006-01-02T15:04:05.000Z", values.Get("before")); err == nil {
+		return t
+	} else {
+		return time.Now().UTC().Add(-time.Hour * 72)
+	}
+}
+
 type CmsArticlesResponseBody struct {
 	Articles   CmsArticles `json:"articles"`
 	CursorMark string      `json:"cursor_mark,omitempty"`
+	Before     *JSONTime   `json:"before"`
 }
 
 func getCmsArticles(app *AppRuntime, w http.ResponseWriter, r *http.Request) *HttpResponseData {
 	logger := CtxLoggerFromReq(r)
 	q := r.URL.Query()
+	before := getBeforeTime(q)
 	inputTypes := getSearchTypesFromQueryString(q, app.Conf.ArticleIndexTypeMap)
 	if len(inputTypes) <= 0 {
 		return CreateJsonRespData(http.StatusOK, &CmsArticlesResponseBody{
 			Articles: make([]*CmsArticle, 0),
+			Before:   &JSONTime{T: before},
 		})
 	}
 	searchAfter, d := DecodeCursorMark(q)
@@ -793,7 +804,11 @@ func getCmsArticles(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Ht
 	}
 	search := app.Elastic.Client.Search(app.Conf.ArticleIndex.Name)
 	search.Type(inputTypes...)
-	search.Query(elastic.NewConstantScoreQuery(elastic.NewExistsQuery("guid")))
+	query := elastic.NewBoolQuery().Filter(
+		elastic.NewExistsQuery("guid"),
+		elastic.NewRangeQuery("created_at").Gte(before),
+	)
+	search.Query(query)
 	search.Size(10000)
 	search.FetchSource(true)
 	search.SortBy(
@@ -812,6 +827,7 @@ func getCmsArticles(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Ht
 	if resp.Hits.TotalHits <= 0 {
 		return CreateJsonRespData(http.StatusOK, &CmsArticlesResponseBody{
 			Articles: make([]*CmsArticle, 0),
+			Before:   &JSONTime{T: before},
 		})
 	}
 	types := app.Conf.ArticleIndexTypes
@@ -867,10 +883,12 @@ func getCmsArticles(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Ht
 		return CreateJsonRespData(http.StatusOK, &CmsArticlesResponseBody{
 			Articles:   articles,
 			CursorMark: cursorMark,
+			Before:     &JSONTime{T: before},
 		})
 	} else {
 		return CreateJsonRespData(http.StatusOK, &CmsArticlesResponseBody{
 			Articles: make([]*CmsArticle, 0),
+			Before:   &JSONTime{T: before},
 		})
 	}
 }
