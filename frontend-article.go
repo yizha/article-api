@@ -20,11 +20,13 @@ const (
 	ARTICLE_TPL = `<html>
 <head></head>
 <body>
-<h1>{{.Headline}}</h1>
+<h1>Headline: {{.Headline}}</h1>
 <div><p>Created at/by: {{.CreatedAt}}/{{.CreatedBy}}</p></div>
 <div><p>Revised at/by: {{.RevisedAt}}/{{.RevisedBy}}</p></div>
-<div><p></p></div>
-<div><p>{{.Content}}</p></div>
+<br/>
+<div><p>Summary: {{.Summary}}</p></div>
+<br/>
+<div><p>Content: {{.Content}}</p></div>
 </body>
 </html>
 `
