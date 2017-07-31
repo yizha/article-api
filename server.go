@@ -20,9 +20,14 @@ const (
 	CtxKeyCmsUser        = "cms-user"
 	CtxKeyId             = "id"
 	CtxKeyVer            = "ver"
+	CtxKeySize           = "size"
 )
 
 func WithCtxStringValue(ctx context.Context, key CtxKey, val string) context.Context {
+	return context.WithValue(ctx, key, val)
+}
+
+func WithCtxIntValue(ctx context.Context, key CtxKey, val int) context.Context {
 	return context.WithValue(ctx, key, val)
 }
 
@@ -35,6 +40,18 @@ func StringFromReq(req *http.Request, key CtxKey) string {
 	} else {
 		fmt.Fprintf(os.Stdout, "value (%T, %v) under key %v is not string!", v, v, key)
 		return ""
+	}
+}
+
+func IntFromReq(req *http.Request, key CtxKey, defaultVal int) int {
+	v := req.Context().Value(key)
+	if v == nil {
+		return defaultVal
+	} else if n, ok := v.(int); ok {
+		return n
+	} else {
+		fmt.Fprintf(os.Stdout, "value (%T, %v) under key %v is not int!", v, v, key)
+		return defaultVal
 	}
 }
 
@@ -223,6 +240,10 @@ func registerHandlers(app *AppRuntime) *http.ServeMux {
 	// article(s) get endpoints
 	mux.Handle("/api/article", handler(app, http.MethodGet, ArticleGet()))
 	mux.Handle("/api/articles", handler(app, http.MethodGet, ArticlesGet()))
+
+	// frontend article(s) endpoints
+	mux.Handle("/article", handler(app, http.MethodGet, FEArticleGet()))
+	mux.Handle("/articles", handler(app, http.MethodGet, FEArticlesGet()))
 
 	return mux
 }
