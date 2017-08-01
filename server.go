@@ -242,8 +242,15 @@ func registerHandlers(app *AppRuntime) *http.ServeMux {
 	mux.Handle("/api/articles", handler(app, http.MethodGet, ArticlesGet()))
 
 	// frontend article(s) endpoints
-	mux.Handle("/article", handler(app, http.MethodGet, FEArticleGet()))
-	mux.Handle("/articles", handler(app, http.MethodGet, FEArticlesGet()))
+	mux.Handle("/article", handler(app, http.MethodGet, FEArticlePage()))
+	mux.Handle("/articles", handler(app, http.MethodGet, FEArticlesPage()))
+
+	// cms endpoints
+	mux.Handle("/cms/user", handler(app, http.MethodGet, CmsPage("cms/user")))
+	mux.Handle("/cms/article", handler(app, http.MethodGet, CmsPage("cms/article")))
+
+	// static files
+	mux.Handle("/static/", http.FileServer(http.Dir(app.Conf.ServerRoot)))
 
 	return mux
 }

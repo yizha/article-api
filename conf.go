@@ -174,6 +174,13 @@ type AppConf struct {
 	// Port to the http server listens on
 	ServerPort int
 
+	// Path to Server root directory
+	// inside which there should be the following dir(s)/file(s)
+	//  static - for static files like css/mdc.css, js/app.js, etc.
+	//  template - for html template file(s)
+	//  static-mapping.json - map original static filename to its hash-postfix'ed name
+	ServerRoot string
+
 	// server read timeout
 	ServerReadTimeout time.Duration
 
@@ -217,12 +224,14 @@ func (c *AppConf) String() string {
 	var x = struct {
 		ServerIP         string   `json:"server-ip"`
 		ServerPort       int      `json:"server-port"`
+		ServerRoot       string   `json:"server-root"`
 		ESHosts          []string `json:"es-hosts"`
 		ArticleIndexName string   `json:"article-index"`
 		LoggingSpec      string   `json:"logging-spec"`
 	}{
 		ServerIP:         c.ServerIP,
 		ServerPort:       c.ServerPort,
+		ServerRoot:       c.ServerRoot,
 		ESHosts:          c.ESHosts,
 		ArticleIndexName: c.ArticleIndex.Name,
 		LoggingSpec:      c.LoggingSpec.String(),
@@ -262,6 +271,22 @@ func parseESHosts(s string) ([]string, error) {
 	return hosts, nil
 }
 
+func checkServerRoot(root string) error {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return fmt.Errorf("missing server root (-server-root)!")
+	}
+	fi, err := os.Stat(root)
+	switch {
+	case err != nil:
+		return err
+	case fi.IsDir():
+		return nil
+	default:
+		return fmt.Errorf("%v is not a directory!", root)
+	}
+}
+
 func ParseArgs(args []string) *AppConf {
 
 	// parse command line args
@@ -269,6 +294,7 @@ func ParseArgs(args []string) *AppConf {
 	var help = cli.Bool("help", false, "Print usage and exit.")
 	var serverIP = cli.String("server-ip", "0.0.0.0", "IP address this API server binds to.")
 	var serverPort = cli.Int("server-port", 8080, "Port this API server listens on.")
+	var serverRoot = cli.String("server-root", "", "Path to the server root directory.")
 	var serverWriteTimeout = cli.Int("server-write-timeout", 15, "http server write timeout in seconds.")
 	var serverReadTimeout = cli.Int("server-read-timeout", 15, "http server read timeout in seconds.")
 	var esHostStr = cli.String("es-hosts", "127.0.0.1:9200", "Elasticsearch server hosts (comma separated).")
@@ -311,6 +337,9 @@ func ParseArgs(args []string) *AppConf {
 	scookie.MaxAge(*authExp)
 
 	// validate given args
+	if err := checkServerRoot(*serverRoot); err != nil {
+		panic(err.Error())
+	}
 	if err := checkIPAndPort(*serverIP, *serverPort); err != nil {
 		panic(err.Error())
 	}
@@ -334,6 +363,7 @@ func ParseArgs(args []string) *AppConf {
 	return &AppConf{
 		ServerIP:           *serverIP,
 		ServerPort:         *serverPort,
+		ServerRoot:         *serverRoot,
 		ServerReadTimeout:  time.Duration(*serverReadTimeout) * time.Second,
 		ServerWriteTimeout: time.Duration(*serverWriteTimeout) * time.Second,
 		ESHosts:            esHosts,

@@ -2,17 +2,21 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"os"
+	"path"
 	//"time"
 
 	elastic "github.com/yizha/elastic"
 )
 
 type AppRuntime struct {
-	Logger  *JsonLogger
-	Conf    *AppConf
-	Elastic *Elastic
+	Logger        *JsonLogger
+	Conf          *AppConf
+	Elastic       *Elastic
+	StaticMapping map[string]string
 }
 
 func createFirstUser(app *AppRuntime) {
@@ -64,9 +68,28 @@ func createIndices(app *AppRuntime) {
 	}
 }
 
+func loadStaticMapping(app *AppRuntime) {
+	staticMappingFilePath := path.Join(app.Conf.ServerRoot, "static-mapping.json")
+	f, err := os.Open(staticMappingFilePath)
+	if err != nil {
+		app.Logger.Pinfof("skip loading static mapping file %v  due to error: %v", staticMappingFilePath, err)
+		return
+	}
+	defer f.Close()
+	bytes, err := ioutil.ReadAll(f)
+	if err != nil {
+		panic(fmt.Sprintf("failed to read static mapping file %v, error: %v", staticMappingFilePath, err))
+	}
+	if err := json.Unmarshal(bytes, &(app.StaticMapping)); err != nil {
+		panic(fmt.Sprintf("failed to decode bytes from %v into json, error: %v", staticMappingFilePath, err))
+	}
+	app.Logger.Pinfof("loaded static mapping data: %v", app.StaticMapping)
+}
+
 func bootstrap(app *AppRuntime) {
 	createIndices(app)
 	createFirstUser(app)
+	loadStaticMapping(app)
 }
 
 func main() {
@@ -90,9 +113,10 @@ func main() {
 	}
 
 	app := &AppRuntime{
-		Logger:  logger,
-		Conf:    conf,
-		Elastic: elastic,
+		Logger:        logger,
+		Conf:          conf,
+		Elastic:       elastic,
+		StaticMapping: make(map[string]string),
 	}
 
 	bootstrap(app)

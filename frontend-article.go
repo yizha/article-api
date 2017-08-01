@@ -128,16 +128,16 @@ func getFEArticles(app *AppRuntime, w http.ResponseWriter, r *http.Request) *Htt
 	buf := &bytes.Buffer{}
 	if err := articleListTpl.Execute(buf, articlesResp); err != nil {
 		body := fmt.Sprintf("failed to generate article page, error: %v", err)
-		CreateInternalServerErrorRespData(body)
+		return CreateInternalServerErrorRespData(body)
 	}
 	return CreateRespData(http.StatusOK, "text/html; charset=UTF-8", buf.Bytes())
 
 }
 
-func FEArticleGet() EndpointHandler {
+func FEArticlePage() EndpointHandler {
 	return GetRequiredStringArg("id", CtxKeyId, getFEArticle)
 }
 
-func FEArticlesGet() EndpointHandler {
+func FEArticlesPage() EndpointHandler {
 	return getFEArticles
 }
